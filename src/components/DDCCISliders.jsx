@@ -40,8 +40,12 @@ export default function DDCCISliders(props) {
         18: "HDMI-2"
     }
 
+    // A monitor's features can arrive after this was first shown, and its input list
+    // can be missing if its capabilities couldn't be read.
+    const inputs = (Array.isArray(values["0x60"]?.[1]) ? values["0x60"] : monitor?.features?.["0x60"])
+
     const changeInputsState = (code) => {
-        const a = [code, [...values["0x60"][1]]]
+        const a = [code, [...inputs[1]]]
         setValues({ ["0x60"]: a })
     }
 
@@ -76,15 +80,15 @@ export default function DDCCISliders(props) {
                             <Slider type="volume" monitorID={monitor.id} level={values[vcp]} monitorName={monitor.name} monitortype={monitor.type} onChange={val => { setValues({ [vcp]: val }); window.dispatchEvent(new CustomEvent("set-volume", { detail: { monitor: monitor.id, value: scaleVolume(val, feature, volumeSettings) } })) }} scrollAmount={props.scrollAmount} />
                         </div>
                     )
-                } else if (vcp === "0x60") {
+                } else if (vcp === "0x60" && Array.isArray(inputs?.[1])) {
                     // Input
                     extraHTML.push(
                         <div className="feature-row feature-inputs" key={monitor.key + "_" + vcp}>
                             <div className="feature-icon"><span className="icon vfix">&#xE839;</span></div>
                             <div style={{ display: "flex", flexWrap: "wrap", gap: "3px" }}>
-                                {values["0x60"][1].map(e =>
+                                {inputs[1].map(e =>
                                     // Some monitors repeat the input in the value's high byte (0x0F0F for 0x0F)
-                                    <button key={e + monitor.id} className={(values["0x60"][0] & 0xFF) === e ? "button disabled" : "button"} disabled={(values["0x60"][0] & 0xFF) === e} onClick={() => { setVCP(monitor.id, parseInt(vcp), e); changeInputsState(e) }}>{inputsData[e] ?? `Input ${e}`}</button>
+                                    <button key={e + monitor.id} className={(inputs[0] & 0xFF) === e ? "button disabled" : "button"} disabled={(inputs[0] & 0xFF) === e} onClick={() => { setVCP(monitor.id, parseInt(vcp), e); changeInputsState(e) }}>{inputsData[e] ?? `Input ${e}`}</button>
                                 )}
                             </div>
                         </div >

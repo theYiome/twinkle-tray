@@ -6,6 +6,10 @@ import TranslateReact from "../TranslateReact"
 import getMonitorName from "../utils/BrightnessPanel/getMonitorName";
 import { usesGammaSlider, isAdjustableDisplay } from "./utilts/monitor.util";
 import BlackoutButton from "./BlackoutButton";
+import PanelErrorBoundary from "./PanelErrorBoundary";
+
+// An error boundary only catches what its children throw, not what's built for them
+const RenderOnce = ({ render }) => render()
 import NetworkTVCard from "./NetworkTVCard";
 import NightLightCard from "./NightLightCard";
 
@@ -345,7 +349,7 @@ const BrightnessPanel = memo(function BrightnessPanel() {
                         <Slider id={monitor.id} level={monitor.brightness} min={0} max={100} num={monitor.num} monitortype={monitor.type} hwid={monitor.key} key={monitor.key} onChange={handleChange} scrollAmount={window.settings?.scrollFlyoutAmount} />
                       </div>
                     )}
-                    <DDCCISliders monitor={monitor} monitorFeatures={monitorFeatures} scrollAmount={window.settings?.scrollFlyoutAmount} />
+                    <PanelErrorBoundary name="a monitor's features" retryKey={monitor}><DDCCISliders monitor={monitor} monitorFeatures={monitorFeatures} scrollAmount={window.settings?.scrollFlyoutAmount} /></PanelErrorBoundary>
                     {showHDRSliders ? <HDRSliders monitor={monitor} scrollAmount={window.settings?.scrollFlyoutAmount} /> : null}
                   </div>
                 )
@@ -384,9 +388,9 @@ const BrightnessPanel = memo(function BrightnessPanel() {
           <div title={T.t("GENERIC_SETTINGS")} className="settings" onClick={window.openSettings}>&#xE713;</div>
         </div>
       </div>
-      {state.sleeping ? (<div></div>) : getMonitors()}
-      {state.sleeping ? null : <NetworkTVCard T={T} />}
-      {state.sleeping ? null : <NightLightCard T={T} />}
+      {state.sleeping ? (<div></div>) : <PanelErrorBoundary name="its monitors" retryKey={state.monitors}><RenderOnce render={getMonitors} /></PanelErrorBoundary>}
+      {state.sleeping ? null : <PanelErrorBoundary name="the TV"><NetworkTVCard T={T} /></PanelErrorBoundary>}
+      {state.sleeping ? null : <PanelErrorBoundary name="Night Light"><NightLightCard T={T} /></PanelErrorBoundary>}
       <div id="mica">
         <div className="displays" style={{ visibility: window.micaState.visibility }}>
           <div className="blur">

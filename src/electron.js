@@ -85,6 +85,7 @@ const { DisplayOverlays } = require("./DisplayOverlays");
 const { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, convertSliderLevel, combineDimLevels } = require("./DimRange");
 const { DisplayModeChanges } = require("./DisplayModes");
 const { DDCRecheck } = require("./DisplayDetection");
+const { stopChild } = require("./WorkerStop");
 const { DisplayHDR } = require("./DisplayHDR");
 const { NightLight } = require("./NightLight");
 const { DisplayLayouts } = require("./DisplayLayouts");
@@ -247,7 +248,9 @@ let monitorsThread = {
     try {
       if (!(monitorsThreadReal?.connected && monitorsThreadReal?.exitCode === null)) {
         startMonitorThread()
-        while(!monitorsThreadReady) {
+        // It won't start while the displays are off, so don't wait for it forever
+        const giveUpAt = Date.now() + 30000
+        while(!monitorsThreadReady && Date.now() < giveUpAt) {
           await Utils.wait(50)
         }
       }
@@ -451,6 +454,7 @@ function waitForMonitorThreadReady(thread = monitorsThreadReal) {
 
 let monitorsThreadStopPromise = false
 let monitorsThreadStopTarget = false
+const abandonedMonitorThreads = new WeakSet()
 function scheduleMonitorInventoryRecovery(generation = monitorRefreshGeneration) {
   if (monitorInventoryRecoveryTimer) return
   monitorInventoryRecoveryTimer = setTimeout(async () => {
@@ -463,19 +467,12 @@ function scheduleMonitorInventoryRecovery(generation = monitorRefreshGeneration)
 
 function recoverMonitorThread(thread, error) {
   // An explicit stop (wake recovery, validation retry, timeout recovery) has
-  // its own replacement/refresh path and must not race this fallback.
-  if (isAppQuitting || !thread || monitorsThreadStopTarget === thread) return Promise.resolve(false)
+  // its own replacement/refresh path and must not race this fallback. So must a
+  // worker that was given up on, which can still exit long after it was replaced.
+  if (isAppQuitting || !thread || monitorsThreadStopTarget === thread || abandonedMonitorThreads.has(thread)) return Promise.resolve(false)
   if (monitorThreadRecoveryPromise) return monitorThreadRecoveryPromise
 
   console.error(error)
-  if (!monitorsThreadFailed) {
-    monitorsThreadFailed = true
-    require('electron').dialog.showMessageBox(null, {
-      title: 'Monitors thread failed',
-      message: 'The monitors thread failed with the following message:',
-      detail: error?.message || error?.toString() || 'Unknown error',
-    }, () => { })
-  }
 
   if (monitorsThreadFailedResetTimer) {
     clearTimeout(monitorsThreadFailedResetTimer)
@@ -493,6 +490,15 @@ function recoverMonitorThread(thread, error) {
     return true
   })().catch(recoveryError => {
     console.error("Couldn't restart monitor thread.", recoveryError)
+    // Worth interrupting for only now, since the usual failure recovers by itself
+    if (!monitorsThreadFailed) {
+      monitorsThreadFailed = true
+      require('electron').dialog.showMessageBox(null, {
+        title: 'Monitors thread failed',
+        message: 'The monitors thread failed with the following message:',
+        detail: error?.message || error?.toString() || 'Unknown error',
+      }, () => { })
+    }
     return false
   }).finally(() => {
     monitorThreadRecoveryPromise = false
@@ -517,32 +523,14 @@ function stopMonitorThread() {
   // newer one still needs its own kill.
   if(monitorsThreadStopPromise && monitorsThreadStopTarget === thread) return monitorsThreadStopPromise;
 
-  const stopPromise = new Promise((resolve, reject) => {
-    const cleanup = () => {
-      thread.removeListener("exit", handleExit)
-      thread.removeListener("close", handleExit)
-    }
-    const handleExit = () => {
-      cleanup()
-      if(monitorsThreadReal === thread) monitorsThreadReal = undefined
-      resolve()
-    }
-
-    thread.once("exit", handleExit)
-    thread.once("close", handleExit)
-
-    try {
-      if(!thread.kill()) {
-        if(thread.exitCode !== null) {
-          handleExit()
-        } else {
-          cleanup()
-          reject(new Error("Monitor thread could not be terminated."))
-        }
-      }
-    } catch(error) {
-      cleanup()
-      reject(error)
+  const stopPromise = stopChild(thread).then(exited => {
+    if(monitorsThreadReal === thread) monitorsThreadReal = undefined
+    if(!exited) {
+      console.log("Monitor thread didn't exit in time. Carrying on without it.")
+      // Work still waiting on it ends the same way as if it had exited, or it
+      // could hold everything up and later count against its replacement
+      abandonedMonitorThreads.add(thread)
+      thread.emit("exit", null, "abandoned")
     }
   }).finally(() => {
     if(monitorsThreadStopPromise === stopPromise) {
@@ -4271,6 +4259,13 @@ function createPanel(toggleOnLoad = false, isRefreshing = false, showOnLoad = tr
     console.log("Event: session-end. TV sent to standby:", networkTV.standbyBeforeExit())
   });
 
+  const panelWindow = mainWindow
+  mainWindow.webContents.on("render-process-gone", (event, details) => {
+    console.log(`Panel's renderer is gone (${details.reason}).`)
+    if (isAppQuitting || panelWindow !== mainWindow || details.reason === "clean-exit") return
+    handlePanelCrash()
+  })
+
   mainWindow.on("minimize", () => { console.log("~~~~~ MAIN WINDOW MINIMIZED ~~~~~~") });
   mainWindow.on("restore", () => { console.log("~~~~~ MAIN WINDOW RESTORED ~~~~~~") });
 
@@ -4357,22 +4352,21 @@ function createPanel(toggleOnLoad = false, isRefreshing = false, showOnLoad = tr
     if(setting.name === "GUID_CONSOLE_DISPLAY_STATE" || setting.name === "GUID_MONITOR_POWER_ON") {
       // The console state also has a value for dimmed, which is still on
       networkTV.setScreensOn(setting.data !== 0)
-      if(setting.data === 1) networkTV.handleDisplayOn()
+      if(setting.data === 1) {
+        networkTV.handleDisplayOn()
+        // The presence event that normally reports this doesn't always come
+        handleDisplaysWokeUp()
+      } else if(setting.data === 0 && setting.name === "GUID_CONSOLE_DISPLAY_STATE" && settings.useGuidPresenceEvent) {
+        // Nor is it sure to report them going off again after waking without anyone there
+        handleDisplaysWentIdle()
+      }
     }
 
     if(setting.name === "GUID_SESSION_USER_PRESENCE") {
       if(!settings.useGuidPresenceEvent) return false;
       if(setting.data === 2) {
         // Idle
-        if(!isWindowsUserIdle) {
-          console.log("Displays have gone to sleep.")
-
-          // If we were about to do a hardware event, stop.
-          if (handleChangeTimeout1) clearTimeout(handleChangeTimeout1);
-          if (handleChangeTimeout2) clearTimeout(handleChangeTimeout2);
-          //if(!isUserIdle) startIdleCheckShort();
-        }
-        isWindowsUserIdle = true
+        handleDisplaysWentIdle()
       } else if(setting.data === 0) {
         // Active
         handleDisplaysWokeUp()
@@ -4457,6 +4451,31 @@ function destroyPanel() {
   }
 }
 
+// A panel that keeps crashing isn't brought back in a loop. It's left closed, and
+// clicking the tray icon makes a new one.
+const PANEL_CRASH_WINDOW_MS = 60000
+const PANEL_CRASH_LIMIT = 3
+let panelCrashes = []
+function handlePanelCrash() {
+  // Whatever it was doing when it crashed won't finish
+  panelSize.visible = false
+  canReposition = true
+  isAnimatingPanel = false
+  panelState = "hidden"
+  networkTV.setWatched(false)
+
+  panelCrashes = panelCrashes.filter(at => Date.now() - at < PANEL_CRASH_WINDOW_MS)
+  panelCrashes.push(Date.now())
+  if (panelCrashes.length > PANEL_CRASH_LIMIT) {
+    console.log("The panel keeps crashing, so it's staying closed until it's next opened.")
+    destroyPanel()
+    return
+  }
+  setTimeout(() => {
+    if (!isAppQuitting) restartPanel()
+  }, 1000)
+}
+
 let restartingPanel = false
 function restartPanel(show = false) {
   console.log("Function: restartPanel");
@@ -4497,7 +4516,8 @@ function getPrimaryDisplay() {
       if (foundDisplay) primaryDisplay = foundDisplay;
     } catch (e) { }
   }
-  return primaryDisplay
+  // Displays can all be elsewhere, or still coming back after a wake
+  return primaryDisplay ?? screen.getPrimaryDisplay()
 }
 
 
@@ -5183,6 +5203,9 @@ function quitApp() {
 
 const toggleTray = async (doRefresh = true, isOverlay = false) => {
 
+  // Someone's clearly here, whatever Windows last reported
+  handleDisplaysWokeUp()
+
   if (mainWindow == null) {
     createPanel(true)
     return false
@@ -5194,7 +5217,12 @@ const toggleTray = async (doRefresh = true, isOverlay = false) => {
   }
 
   if (doRefresh && !isOverlay) {
-    tryEagerUpdate(false)
+    // A quick update can't find monitors that were lost, only a full one can
+    if (Object.keys(monitors).length) {
+      tryEagerUpdate(false)
+    } else {
+      refreshMonitors(true, true).catch(e => console.log("Couldn't look for monitors", e))
+    }
     getThemeRegistry()
     getSettings()
 
@@ -5509,14 +5537,16 @@ let handleChangeTimeout2
 function handleMonitorChange(t, e, d) {
   console.log(`Event: handleMonitorChange (${t})`);
 
-  // Skip event that happens at startup
-  if (!skipFirstMonChange) {
-    skipFirstMonChange = true
+  if(resumeRecoveryInProgress) {
+    console.log(`Resume recovery is already handling ${t}.`)
+    // Its scan won't see a change that comes after it has started
+    if(resumeRefreshStarted) resumeMissedChange = t
     return false
   }
 
-  if(resumeRecoveryInProgress) {
-    console.log(`Resume recovery is already handling ${t}.`)
+  // Skip event that happens at startup
+  if (!skipFirstMonChange) {
+    skipFirstMonChange = true
     return false
   }
 
@@ -5565,6 +5595,8 @@ let recentlyWokeUp = false
 let recentlyWokeUpTimeout = false
 let resumeRecoveryInProgress = false
 let resumeRecoveryHandled = false
+let resumeRefreshStarted = false
+let resumeMissedChange = false
 function clearRecentlyWokeUpLater() {
   if(recentlyWokeUpTimeout) clearTimeout(recentlyWokeUpTimeout);
   recentlyWokeUpTimeout = setTimeout(() => {
@@ -5580,6 +5612,8 @@ powerMonitor.on("resume", async () => {
   recentlyWokeUp = true
   resumeRecoveryInProgress = true
   resumeRecoveryHandled = false
+  resumeRefreshStarted = false
+  resumeMissedChange = false
   if(recentlyWokeUpTimeout) {
     clearTimeout(recentlyWokeUpTimeout)
     recentlyWokeUpTimeout = false
@@ -5624,6 +5658,7 @@ powerMonitor.on("resume", async () => {
     const refreshWaitDeadline = Date.now() + 30000
     while((isRefreshing || pausedMonitorUpdates) && Date.now() < refreshWaitDeadline) await Utils.wait(50)
     const refreshRequested = Date.now()
+    resumeRefreshStarted = true
     await refreshMonitors(true, true, true, hasEnabledLinkedFeatures())
 
     if (!settings.disableAutoRefresh) {
@@ -5643,6 +5678,7 @@ powerMonitor.on("resume", async () => {
   } catch(error) {
     block.release()
     console.error("Couldn't restore monitor thread after resume.", error)
+    resumeMissedChange = "failed resume recovery"
   } finally {
     // Native sensor handles and external sensor connections may not survive
     // sleep. Reconnect even when monitor thread recovery failed — the
@@ -5650,8 +5686,27 @@ powerMonitor.on("resume", async () => {
     await lightSensor.resume()
     resumeRecoveryInProgress = false
     clearRecentlyWokeUpLater()
+    if(resumeMissedChange) {
+      const change = resumeMissedChange
+      resumeMissedChange = false
+      // This one's real, so it mustn't be mistaken for the event at startup
+      skipFirstMonChange = true
+      handleMonitorChange(change)
+    }
   }
 })
+
+function handleDisplaysWentIdle() {
+  if(!isWindowsUserIdle) {
+    console.log("Displays have gone to sleep.")
+
+    // If we were about to do a hardware event, stop.
+    if (handleChangeTimeout1) clearTimeout(handleChangeTimeout1);
+    if (handleChangeTimeout2) clearTimeout(handleChangeTimeout2);
+    //if(!isUserIdle) startIdleCheckShort();
+  }
+  isWindowsUserIdle = true
+}
 
 function handleDisplaysWokeUp() {
   if(!isWindowsUserIdle) return

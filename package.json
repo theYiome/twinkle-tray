@@ -80,6 +80,7 @@
       "src/DisplayModes.js",
       "src/DisplayHDR.js",
       "src/DisplayDetection.js",
+      "src/WorkerStop.js",
       "src/NightLight.js",
       "src/DisplayLayouts.js",
       "src/LocalAPI.js",
