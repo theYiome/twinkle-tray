@@ -84,6 +84,7 @@ const w32disp = require("win32-displayconfig");
 const { NetworkTV } = require("./NetworkTV");
 const { DisplayOverlays, MINIMUM_LEVEL: MINIMUM_DIM_LEVEL } = require("./DisplayOverlays");
 const { DisplayHDR } = require("./DisplayHDR");
+const { NightLight } = require("./NightLight");
 const { DisplayLayouts } = require("./DisplayLayouts");
 const { LocalAPI } = require("./LocalAPI");
 
@@ -985,6 +986,7 @@ const defaultSettings = {
   displayDimLevels: {},
   localAPIEnabled: false,
   localAPIPort: 47380,
+  showNightLight: true,
 }
 
 const tempSettings = {
@@ -3812,6 +3814,19 @@ ipcMain.on('save-report', async () => {
 
 const displayOverlays = new DisplayOverlays()
 const displayHDR = new DisplayHDR({ native: require("windows-hdr") })
+const nightLight = new NightLight({ reg })
+nightLight.on("changed", () => sendDisplayControlState())
+
+// Windows owns these settings, so they're read again whenever they might be seen
+function refreshNightLight() {
+  nightLight.refresh()
+  sendDisplayControlState()
+}
+
+async function resyncNightLight() {
+  await nightLight.clearPreview()
+  refreshNightLight()
+}
 const displayLayouts = new DisplayLayouts(path.join(configFilesDir, `display-layouts${(isDev ? "-dev" : "")}.json`))
 const displayControlSecretsPath = path.join(configFilesDir, `display-control${(isDev ? "-dev" : "")}.secrets`)
 let displayTargets = []
@@ -3891,6 +3906,7 @@ function getDisplayControlState() {
         : [])
     })),
     layouts: displayLayouts.list(),
+    nightLight: { ...nightLight.getState(), show: settings.showNightLight !== false },
     api: {
       enabled: !!settings.localAPIEnabled,
       port: settings.localAPIPort,
@@ -4044,6 +4060,14 @@ const displayControlCommands = {
   "display.moveWindows": ({ key }) => moveWindowsOffDisplay(key),
   "display.dim": ({ key, level }) => setDisplayDim(key, level),
   "display.setHDR": ({ key, on }) => setDisplayHDR(key, !!on),
+  "nightLight.adjust": async ({ level }) => {
+    await nightLight.adjust(level)
+    sendDisplayControlState()
+  },
+  "nightLight.setShown": ({ show }) => {
+    writeSettings({ showNightLight: !!show }, false)
+    sendDisplayControlState()
+  },
   "layout.save": async ({ name }) => { await displayLayouts.save(name); sendDisplayControlState() },
   "layout.apply": async ({ name }) => { await displayLayouts.apply(name); await refreshDisplayControl() },
   "layout.delete": ({ name }) => { displayLayouts.delete(name); sendDisplayControlState() },
@@ -4086,6 +4110,7 @@ const localAPI = new LocalAPI({
     "POST /displays/:key/dim": ({ level }, { key }) => setDisplayDim(key, level),
     "POST /displays/:key/brightness": ({ level }, { key }) => setMonitorBrightness(key, level),
     "POST /displays/:key/hdr": ({ on }, { key }) => setDisplayHDR(key, !!on),
+    "POST /night-light": ({ level }) => nightLight.setLevel(level),
     "POST /layouts/:name/save": (body, { name }) => displayControlCommands["layout.save"]({ name }),
     "POST /layouts/:name/apply": (body, { name }) => displayControlCommands["layout.apply"]({ name })
   }
@@ -4110,11 +4135,18 @@ async function startDisplayControl() {
   // Only the Windows startup entry passes this, so reopening the app doesn't wake the TV
   if (app.commandLine.hasSwitch("autostart")) networkTV.wakeAtLogin()
   await startLocalAPI()
+  await resyncNightLight()
 }
 
 powerMonitor.on("suspend", () => networkTV.handleSuspend())
-powerMonitor.on("resume", () => networkTV.restartPolling())
-powerMonitor.on("unlock-screen", () => networkTV.handleDisplayOn())
+powerMonitor.on("resume", () => {
+  networkTV.restartPolling()
+  resyncNightLight()
+})
+powerMonitor.on("unlock-screen", () => {
+  networkTV.handleDisplayOn()
+  resyncNightLight()
+})
 
 //
 //
@@ -5146,6 +5178,7 @@ const toggleTray = async (doRefresh = true, isOverlay = false) => {
       showPanel(true, panelSize.height)
       panelState = "visible"
       networkTV.setWatched(true)
+      refreshNightLight()
       mainWindow.focus()
     } else {
       sendToAllWindows("display-mode", "overlay")

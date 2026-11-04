@@ -5,6 +5,7 @@ console.log("Monitors.js starting. If you see this again, something bad happened
 const w32disp = require("win32-displayconfig");
 const wmibridge = require("wmi-bridge");
 const hdr = require("windows-hdr");
+const { parseDisplayHwid, NullHandleRetry } = require("./DisplayDetection");
 const { exec } = require('child_process');
 require("os").setPriority(0, require("os").constants.priority.PRIORITY_BELOW_NORMAL)
 
@@ -1346,8 +1347,10 @@ let win32Failed = false
 getMonitorsWin32 = () => {
     let foundDisplays = {}
     return new Promise(async (resolve, reject) => {
+        // Cleared however this ends, or an error here would later count as a timeout
+        let timeout
         try {
-            const timeout = setTimeout(() => { win32Failed = true; console.log("getMonitorsWin32 Timed out."); reject({}) }, 4000)
+            timeout = setTimeout(() => { win32Failed = true; console.log("getMonitorsWin32 Timed out."); reject({}) }, 4000)
             let displays = []
             const displayConfig = await w32disp.extractDisplayConfig()
 
@@ -1361,8 +1364,11 @@ getMonitorsWin32 = () => {
 
             // Prepare results
             for (const monitor of displays) {
-                const hwid = monitor.devicePath.split("#")
-                hwid[2] = hwid[2].split("_")[0]
+                const hwid = parseDisplayHwid(monitor.devicePath)
+                if (!hwid) {
+                    console.log(`getMonitorsWin32: Skipping a display with an unexpected path: ${monitor.devicePath}`)
+                    continue
+                }
 
                 const win32Info = {
                     id: `${hwid[0]}#${hwid[1]}#${hwid[2]}`,
@@ -1379,16 +1385,17 @@ getMonitorsWin32 = () => {
 
                 foundDisplays[hwid[2]] = win32Info
             }
-
-            // Return prepared results
-            clearTimeout(timeout)
         } catch (e) {
             console.log(`getMonitorsWin32: Failed to get all monitors. (L2)`, e)
+        } finally {
+            clearTimeout(timeout)
         }
         lastWin32 = deepCopy(foundDisplays)
         resolve(foundDisplays)
     })
 }
+
+const ddcHandleRetry = new NullHandleRetry({ wait })
 
 getFeaturesDDC = (ddcciMethod = "accurate", coreOnly = false) => {
     const monitorFeatures = {}
@@ -1407,34 +1414,9 @@ getFeaturesDDC = (ddcciMethod = "accurate", coreOnly = false) => {
             getDDCCI()
             await wait(10)
 
-            // Sometimes the handles returned are NULL, so we should try again.
-            let tmpDdcciMonitors = withDDCSentinel("refresh", false, () =>
+            const ddcciMonitors = await ddcHandleRetry.scan(() => withDDCSentinel("refresh", false, () =>
                 ddcci.getAllMonitors(ddcciMethod, true, !settings.disableHighLevel, getDDCBlockedKeys())
-            )
-            if(tmpDdcciMonitors) {
-                let doRetry = false
-                for(const monitor of tmpDdcciMonitors) {
-                    if(monitor.handleIsValid === false) {
-                        doRetry = monitor
-                        break
-                    }
-                }
-                if(doRetry) {
-                    console.log(`DDC/CI results contain a null handle (${doRetry?.deviceKey}). Trying again.`)
-                    await wait(200)
-                    tmpDdcciMonitors = withDDCSentinel("refresh", false, () =>
-                        ddcci.getAllMonitors(ddcciMethod, true, !settings.disableHighLevel, getDDCBlockedKeys())
-                    )
-                    for(const monitor of tmpDdcciMonitors) {
-                        if(monitor.handleIsValid === false) {
-                            console.log(`DDC/CI results still contain a null handle (${doRetry?.deviceKey}). Continuing anyway.`)
-                            break
-                        }
-                    }
-                }
-            }
-
-            const ddcciMonitors = tmpDdcciMonitors
+            ))
             lastDDCCIList = ddcciMonitors
 
             for (let monitor of ddcciMonitors) {

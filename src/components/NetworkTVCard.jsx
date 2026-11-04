@@ -82,13 +82,13 @@ export default function NetworkTVCard({ T }) {
             {isOn && tv.volume !== null ? (
                 <div className="feature-row">
                     <div className="feature-icon"><span className="icon vfix">&#xE767;</span></div>
-                    <Slider level={tv.volume} min={tv.volumeMin} max={tv.volumeMax} onChange={sendVolume} scrollAmount={1} />
+                    <Slider level={tv.volume} min={tv.volumeMin} max={tv.volumeMax} onChange={sendVolume} scrollAmount={1} syncLevel={true} />
                 </div>
             ) : null}
             {display?.active ? (
                 <div className="feature-row">
                     <div className="feature-icon"><span className="icon vfix">&#xE706;</span></div>
-                    <Slider level={display.dim} min={5} max={100} onChange={sendDim} scrollAmount={window.settings?.scrollFlyoutAmount} />
+                    <Slider level={display.dim} min={5} max={100} onChange={sendDim} scrollAmount={window.settings?.scrollFlyoutAmount} syncLevel={true} />
                 </div>
             ) : null}
             {display?.mirroredWith?.length ? <div className="tv-note">{T.t("PANEL_TV_MIRROR_NOTE", display.mirroredWith.join(", "))}</div> : null}

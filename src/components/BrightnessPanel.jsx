@@ -6,6 +6,7 @@ import TranslateReact from "../TranslateReact"
 import getMonitorName from "../utils/BrightnessPanel/getMonitorName";
 import { usesGammaSlider, isAdjustableDisplay } from "./utilts/monitor.util";
 import NetworkTVCard from "./NetworkTVCard";
+import NightLightCard from "./NightLightCard";
 
 const BrightnessPanel = memo(function BrightnessPanel() {
 
@@ -400,6 +401,7 @@ const BrightnessPanel = memo(function BrightnessPanel() {
       </div>
       {state.sleeping ? (<div></div>) : getMonitors()}
       {state.sleeping ? null : <NetworkTVCard T={T} />}
+      {state.sleeping ? null : <NightLightCard T={T} />}
       {
         (state.update && state.update.show)
           ?

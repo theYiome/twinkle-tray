@@ -68,6 +68,10 @@ export default class Slider extends Component {
             this.setState({
                 level: this.cap(this.props.level)
             }, this.fireChange())
+        } else if (this.props.syncLevel && oldProps.level != this.props.level) {
+            // For values that can change outside the panel. The slider draws from its
+            // props, but scrolling steps from this state, so it would jump back otherwise.
+            this.setState({ level: this.cap(this.props.level) })
         }
     }
 

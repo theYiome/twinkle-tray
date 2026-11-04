@@ -116,7 +116,7 @@ function DisplayRow({ T, display }) {
         )}>
             {display.active ? (
                 <SettingsChild title={T.t("SETTINGS_DISPLAYS_DIM_TITLE")} description={T.t("SETTINGS_DISPLAYS_DIM_DESC")}>
-                    <Slider level={display.dim} min={5} max={100} onChange={level => run("display.dim", { level })} scrollAmount={2} />
+                    <Slider level={display.dim} min={5} max={100} onChange={level => run("display.dim", { level })} scrollAmount={2} syncLevel={true} />
                 </SettingsChild>
             ) : null}
             {display.active && display.hdr !== "unsupported" ? (
@@ -162,6 +162,23 @@ function Layouts({ T, layouts }) {
                     </div>
                 )} />
             ))}
+        </SettingsOption>
+    )
+}
+
+function NightLightSettings({ T, nightLight }) {
+    const notes = []
+    if (!nightLight.supported) notes.push(T.t("SETTINGS_NIGHT_LIGHT_UNAVAILABLE"))
+    if (nightLight.perDevice) notes.push(T.t("SETTINGS_NIGHT_LIGHT_PER_DEVICE"))
+
+    return (
+        <SettingsOption title={T.t("SETTINGS_NIGHT_LIGHT_TITLE")} description={T.t("SETTINGS_NIGHT_LIGHT_DESC")} expandable={notes.length > 0} startExpanded={true} input={(
+            <div className="inputToggle-generic" data-textside="right">
+                <input type="checkbox" checked={nightLight.show} data-checked={nightLight.show} onChange={e => send("nightLight.setShown", { show: e.target.checked })} />
+                <div className="text">{nightLight.show ? T.t("GENERIC_ON") : T.t("GENERIC_OFF")}</div>
+            </div>
+        )}>
+            {notes.map(note => <SettingsChild key={note} description={note} />)}
         </SettingsOption>
     )
 }
@@ -212,7 +229,7 @@ export default function DisplayControlSettings({ T }) {
     }, [])
 
     if (!control) return null
-    const { tv, displays, layouts, api } = control
+    const { tv, displays, layouts, api, nightLight } = control
 
     return (
         <>
@@ -225,6 +242,7 @@ export default function DisplayControlSettings({ T }) {
                 {displays.map(display => <DisplayRow key={display.devicePath} T={T} display={display} />)}
             </div>
             <div className="pageSection">
+                <NightLightSettings T={T} nightLight={nightLight} />
                 <Layouts T={T} layouts={layouts} />
                 <LocalAPISettings T={T} api={api} />
             </div>

@@ -79,6 +79,8 @@
       "src/TVStandbyWorker.js",
       "src/DisplayOverlays.js",
       "src/DisplayHDR.js",
+      "src/DisplayDetection.js",
+      "src/NightLight.js",
       "src/DisplayLayouts.js",
       "src/LocalAPI.js",
       "src/wmi-bridge-test.js",
