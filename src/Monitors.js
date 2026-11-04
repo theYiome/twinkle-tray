@@ -56,7 +56,6 @@ function getSoftwareBrightness(monitor) {
 function gammaFeaturesActive() {
     if (settings?.useSoftwareBrightnessFallback) return true
     if (Object.values(settings?.gammaAsMainSliderDisplays || {}).some(enabled => enabled)) return true
-    if (Object.values(settings?.extendMinimumDisplays || {}).some(enabled => enabled)) return true
     return false
 }
 

@@ -81,7 +81,8 @@ const { VerticalRefreshRateContext, addDisplayChangeListener } = require("win32-
 const refreshCtx = new VerticalRefreshRateContext();
 const w32disp = require("win32-displayconfig");
 const { NetworkTV } = require("./NetworkTV");
-const { DisplayOverlays, MINIMUM_LEVEL: MINIMUM_DIM_LEVEL } = require("./DisplayOverlays");
+const { DisplayOverlays } = require("./DisplayOverlays");
+const { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, combineDimLevels } = require("./DimRange");
 const { DisplayHDR } = require("./DisplayHDR");
 const { NightLight } = require("./NightLight");
 const { DisplayLayouts } = require("./DisplayLayouts");
@@ -881,6 +882,7 @@ const defaultSettings = {
   gammaAsMainSliderDisplays: {},
   extendMinimumDisplays: {},
   extendMinimumBreakpoints: {},
+  extendedDimLevels: {},
   sdrAsMainSliderDisplays: {},
   sdrAsMainSlider: false,
   language: "system",
@@ -1367,6 +1369,7 @@ function processSettings(newSettings = {}, sendUpdate = true) {
     if (newSettings.gammaAsMainSliderDisplays !== undefined
       || newSettings.extendMinimumDisplays !== undefined) {
       restoreUnusedGammaRamps(lastGammaOptIns)
+      clearUnusedExtendedDim()
       extendedMinimumPinned.clear() // The next slider move writes hardware again
       shouldRefreshMonitors = true
     } else if (newSettings.extendMinimumBreakpoints !== undefined) {
@@ -1445,13 +1448,11 @@ function canUseGammaRamp(monitor) {
   return (monitor?.hdr !== "active")
 }
 
-// Per-display opt-in: the bottom of the slider range keeps hardware brightness
-// at its minimum and dims further with the gamma ramp.
+// On unless turned off for a display: the bottom of the slider range keeps hardware
+// brightness at its minimum and dims further with an overlay, which also works in HDR.
 function usesExtendedMinimum(monitor) {
-  if (!settings.extendMinimumDisplays?.[monitor?.key]) return false
-  if (!canUseGammaRamp(monitor)) return false
+  if (settings.extendMinimumDisplays?.[monitor?.key] === false) return false
   if (usesGammaSlider(monitor)) return false // Gamma is already the primary control
-  if (!(monitor?.gammaBrightness >= 0)) return false
   return (monitor?.type === "ddcci" || monitor?.type === "wmi" || monitor?.type === "studio-display")
 }
 
@@ -1468,11 +1469,11 @@ const extendedMinimumPinned = new Set()
 // Some panels read back a little above 0 at their floor (quantized WMI levels,
 // DDC/CI monitors that clamp to 1, calibration that doesn't map the raw floor
 // to 0). Readings this close count as the floor while it's ours: we pinned it,
-// or the ramp is dimmed (which only happens with hardware at its floor).
+// or the overlay is dimming (which only happens with hardware at its floor).
 function isAtExtendedMinimumFloor(monitor, hardwareLevel) {
   if (hardwareLevel <= 0) return true
   if (!(hardwareLevel <= EXTENDED_MINIMUM_FLOOR_TOLERANCE)) return false
-  return (extendedMinimumPinned.has(monitor.id) || monitor.gammaBrightness < 100)
+  return (extendedMinimumPinned.has(monitor.id) || getExtendedDimLevel(monitor) < 100)
 }
 
 // Slider space value for a display using the extended range
@@ -1480,21 +1481,38 @@ function getExtendedMinimumLevel(monitor, hardwareLevel = 0) {
   const breakpoint = getExtendedMinimumBreakpoint(monitor)
   const atFloor = isAtExtendedMinimumFloor(monitor, hardwareLevel)
 
-  // The ramp is only meaningful while hardware sits at its floor. Anything else
+  // The overlay is only meaningful while hardware sits at its floor. Anything else
   // means another app (or a display event) changed it, so report the hardware.
-  if (monitor.gammaBrightness < 100 && atFloor) {
-    return Math.round((monitor.gammaBrightness - GAMMA_BRIGHTNESS_MIN) * breakpoint / (100 - GAMMA_BRIGHTNESS_MIN))
-  }
-  return Math.round(breakpoint + ((atFloor ? 0 : hardwareLevel) * (100 - breakpoint) / 100))
+  const dim = getExtendedDimLevel(monitor)
+  if (dim < 100 && atFloor) return sliderLevelForDim(dim, breakpoint)
+  return sliderLevelForHardware(atFloor ? 0 : hardwareLevel, breakpoint)
 }
 
-// Hardware left its floor while the ramp was dimmed (brightness keys, Quick
-// Settings, another app). The ramp only belongs below the breakpoint, so drop
+// Hardware left its floor while the overlay was dimming (brightness keys, Quick
+// Settings, another app). The overlay only belongs below the breakpoint, so drop
 // it instead of leaving the display dimmer than its slider says.
 function releaseExtendedMinimumRamp(monitor, hardwareLevel) {
   if (!usesExtendedMinimum(monitor) || isAtExtendedMinimumFloor(monitor, hardwareLevel)) return false
   extendedMinimumPinned.delete(monitor.id)
-  return setTrackedGammaLevel(monitor, 100)
+  return setExtendedDimLevel(monitor, 100)
+}
+
+function getExtendedDimLevel(monitor) {
+  return settings.extendedDimLevels?.[monitor?.key] ?? 100
+}
+
+function setExtendedDimLevel(monitor, level) {
+  if (getExtendedDimLevel(monitor) === level) return false
+  writeSettings({ extendedDimLevels: Object.assign({}, settings.extendedDimLevels, { [monitor.key]: level }) }, false)
+  applyDisplayOverlays()
+  return true
+}
+
+// Don't leave a display dimmed by a slider that no longer goes that low
+function clearUnusedExtendedDim() {
+  for (const key in monitors) {
+    if (!usesExtendedMinimum(monitors[key])) setExtendedDimLevel(monitors[key], 100)
+  }
 }
 
 // Set the ramp and track the level. Writes are coalesced, so transitions
@@ -1510,7 +1528,7 @@ function setTrackedGammaLevel(monitor, level) {
 
 // Does this display's brightness depend on its gamma ramp?
 function usesGammaRamp(monitor) {
-  return (usesExtendedMinimum(monitor) || usesGammaSlider(monitor) || monitor?.type === "software")
+  return (usesGammaSlider(monitor) || monitor?.type === "software")
 }
 
 // Windows resets gamma ramps on most display events (monitor connect/disconnect,
@@ -1552,13 +1570,12 @@ let lastGammaOptIns = false
 
 function getGammaOptIns() {
   return {
-    gammaAsMainSliderDisplays: Object.assign({}, settings.gammaAsMainSliderDisplays),
-    extendMinimumDisplays: Object.assign({}, settings.extendMinimumDisplays)
+    gammaAsMainSliderDisplays: Object.assign({}, settings.gammaAsMainSliderDisplays)
   }
 }
 
 function hasGammaOptIn(monitor, optIns = settings) {
-  return !!(optIns?.gammaAsMainSliderDisplays?.[monitor?.key] || optIns?.extendMinimumDisplays?.[monitor?.key])
+  return !!optIns?.gammaAsMainSliderDisplays?.[monitor?.key]
 }
 
 // Undo our software dimming on displays that just lost their gamma opt-in. A
@@ -3190,15 +3207,13 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     }
 
     // Split the slider range: above the breakpoint drives hardware brightness,
-    // below it pins hardware at its minimum and dims with the gamma ramp.
+    // below it pins hardware at its minimum and dims with an overlay.
     const extendedMinimum = (vcp === "brightness" && usesExtendedMinimum(monitor))
     let hardwareLevel = level
     if (extendedMinimum) {
-      const breakpoint = getExtendedMinimumBreakpoint(monitor)
-      hardwareLevel = (level >= breakpoint ? (level - breakpoint) * 100 / (100 - breakpoint) : 0)
-      setTrackedGammaLevel(monitor, (level >= breakpoint
-        ? 100
-        : GAMMA_BRIGHTNESS_MIN + (level * (100 - GAMMA_BRIGHTNESS_MIN) / breakpoint)))
+      const { hardware, dim } = splitSliderLevel(level, getExtendedMinimumBreakpoint(monitor))
+      hardwareLevel = hardware
+      setExtendedDimLevel(monitor, dim)
     }
 
     const normalized = normalizeBrightness(hardwareLevel, false, (useCap ? monitor.min : 0), (useCap ? monitor.max : 100), (useCap ? monitor.calibration : []))
@@ -3852,14 +3867,21 @@ async function refreshDisplayControl() {
   try {
     displayTargets = await w32disp.listDisplayTargets()
     displayHDR.refresh()
-    displayOverlays.apply(displayTargets.filter(target => target.active).map(target => ({
-      bounds: targetBounds(target),
-      level: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100
-    })))
+    applyDisplayOverlays()
   } catch (e) {
     console.log("Couldn't read display targets", e.message)
   }
   sendDisplayControlState()
+}
+
+function applyDisplayOverlays() {
+  displayOverlays.apply(displayTargets.filter(target => target.active).map(target => {
+    const key = displayKeyFromPath(target.devicePath)
+    return {
+      bounds: targetBounds(target),
+      level: combineDimLevels(settings.displayDimLevels?.[key] ?? 100, settings.extendedDimLevels?.[key] ?? 100)
+    }
+  }))
 }
 
 function scheduleDisplayControlRefresh() {
@@ -3967,8 +3989,9 @@ const displayControlCommands = {
   "tv.pairStart": ({ host }) => networkTV.startPairing(host),
   "tv.pairFinish": ({ pin }) => networkTV.finishPairing(pin),
   "tv.forget": () => networkTV.forget(),
-  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown, followSleep, keepScreenSaverAway }) => {
+  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown, followSleep, keepScreenSaverAway, screensOffStandbyMinutes }) => {
     const changes = {}
+    if (screensOffStandbyMinutes !== undefined) changes.screensOffStandbyMinutes = Math.max(0, Number(screensOffStandbyMinutes) || 0)
     if (followSleep !== undefined) changes.followSleep = !!followSleep
     if (keepScreenSaverAway !== undefined) changes.keepScreenSaverAway = !!keepScreenSaverAway
     if (autoDisconnect !== undefined) changes.autoDisconnect = !!autoDisconnect
@@ -3976,6 +3999,7 @@ const displayControlCommands = {
     if (standbyOnShutdown !== undefined) changes.standbyOnShutdown = !!standbyOnShutdown
     if (displayPath !== undefined) changes.displayPath = displayPath
     writeSettings({ networkTV: Object.assign({}, settings.networkTV, changes) }, false)
+    if (screensOffStandbyMinutes !== undefined) networkTV.startScreensOffTimer()
     return networkTV.readDisplay()
   },
   "tv.power": ({ on }) => networkTV.setPower(!!on),

@@ -11,4 +11,4 @@ function finish(result) {
     Atomics.notify(done, 0)
 }
 
-new PhilipsTV(host, { deviceId, authKey }).sendKey("Standby").then(() => finish(1), () => finish(2))
+new PhilipsTV(host, { deviceId, authKey }).standby().then(() => finish(1), () => finish(2))

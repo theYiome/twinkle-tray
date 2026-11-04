@@ -4,14 +4,12 @@
 
 const { BrowserWindow, screen } = require("electron")
 const { WindowUtils } = require("tt-windows-utils")
+const { MINIMUM_DIM_LEVEL } = require("./DimRange")
 
 const HWND_TOPMOST = -1
 const SWP_NOACTIVATE = 0x0010
 const TOPMOST_CHECK_MS = 5000
 const PLACEMENT_RETRY_MS = 250
-
-// Keeps every display readable, so nobody ends up unable to see the controls
-const MINIMUM_LEVEL = 5
 
 class DisplayOverlays {
     constructor() {
@@ -43,7 +41,7 @@ class DisplayOverlays {
                 overlay = { window: this.createWindow(bounds), bounds }
                 this.overlays.set(id, overlay)
             }
-            overlay.window.setOpacity((100 - Math.max(MINIMUM_LEVEL, level)) / 100)
+            overlay.window.setOpacity((100 - Math.max(MINIMUM_DIM_LEVEL, level)) / 100)
         }
 
         if (this.overlays.size && !this.topmostTimer) {
@@ -108,4 +106,4 @@ class DisplayOverlays {
     }
 }
 
-module.exports = { DisplayOverlays, MINIMUM_LEVEL }
+module.exports = { DisplayOverlays }

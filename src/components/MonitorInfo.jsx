@@ -159,7 +159,6 @@ function setGammaBrightness(monitor, value) {
 function gammaFeaturesActive() {
     if (window.settings?.useSoftwareBrightnessFallback) return true
     if (Object.values(window.settings?.gammaAsMainSliderDisplays || {}).some(enabled => enabled)) return true
-    if (Object.values(window.settings?.extendMinimumDisplays || {}).some(enabled => enabled)) return true
     return false
 }
 

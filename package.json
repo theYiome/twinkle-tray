@@ -76,6 +76,7 @@
       "src/NetworkTV.js",
       "src/TVStandbyWorker.js",
       "src/DisplayOverlays.js",
+      "src/DimRange.js",
       "src/DisplayHDR.js",
       "src/DisplayDetection.js",
       "src/NightLight.js",

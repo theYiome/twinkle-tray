@@ -222,6 +222,16 @@ class PhilipsTV {
         return this.request("POST", "/input/key", { key })
     }
 
+    // Only call this on a TV that's on, since the key is a toggle that could wake one
+    standby() {
+        return this.sendKey("Standby")
+    }
+
+    // HDMI, as opposed to the TV's own apps and home screen. It doesn't say which input.
+    async isShowingExternalInput() {
+        return (await this.request("GET", "/context"))?.level1 === "WatchExtension"
+    }
+
     // Empty while Ambilight is off
     async getAmbilightConfig() {
         const config = await this.request("GET", "/ambilight/currentconfiguration")

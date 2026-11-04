@@ -30,6 +30,9 @@ const SCREEN_SAVER_KEY = "CursorUp"
 const SCREEN_SAVER_KEY_INTERVAL_MS = 4 * 60 * 1000
 // Sent more than once when the screens return, since the TV may still be settling
 const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
+const SCREENS_OFF_DEFAULT_MINUTES = 5
+// After being told to go to standby, the TV still looks like it's on for a while
+const STANDBY_SETTLE_MS = 20000
 
 // Turns raw readings into a settled power state. Pure, so the rules that decide
 // when a display gets turned off can be tested without a TV.
@@ -122,6 +125,9 @@ class NetworkTV extends EventEmitter {
         this.screensOn = true
         this.screenSaverTimer = null
         this.screenSaverWakeTimers = []
+        this.screensOffTimer = null
+        this.wakeRetryTimer = null
+        this.standbySentAt = 0
         this.getConfig = getConfig
         this.setConfig = setConfig
         this.loadCredentials = loadCredentials
@@ -167,6 +173,11 @@ class NetworkTV extends EventEmitter {
         return !!(this.config.host && this.tv?.deviceId)
     }
 
+    // 0 turns it off
+    get screensOffMinutes() {
+        return this.config.screensOffStandbyMinutes ?? SCREENS_OFF_DEFAULT_MINUTES
+    }
+
     start() {
         const credentials = this.loadCredentials()
         if (this.config.host && credentials) {
@@ -189,6 +200,10 @@ class NetworkTV extends EventEmitter {
         clearInterval(this.screenSaverTimer)
         this.screenSaverTimer = null
         this.cancelScreenSaverWakeKeys()
+        clearTimeout(this.screensOffTimer)
+        this.screensOffTimer = null
+        clearTimeout(this.wakeRetryTimer)
+        this.wakeRetryTimer = null
     }
 
     // After the PC sleeps nothing is known about the TV, so don't act on old readings
@@ -220,6 +235,7 @@ class NetworkTV extends EventEmitter {
             standbyOnShutdown: !!this.config.standbyOnShutdown,
             followSleep: this.config.followSleep !== false,
             keepScreenSaverAway: this.config.keepScreenSaverAway !== false,
+            screensOffStandbyMinutes: this.screensOffMinutes,
             disconnectedAutomatically: !!this.config.disconnectedAutomatically,
             canWake: !!this.config.wakeMacs?.length,
             standbyFailure: this.config.standbyFailure ?? null,
@@ -288,11 +304,59 @@ class NetworkTV extends EventEmitter {
     // Windows reports one state for all of its displays, which is all there is to go by
     setScreensOn(on) {
         const returned = (on && !this.screensOn)
+        const left = (!on && this.screensOn)
         this.screensOn = on
         if (returned) {
             this.sendScreenSaverWakeKeys()
         } else if (!on) {
             this.cancelScreenSaverWakeKeys()
+        }
+        if (on) {
+            clearTimeout(this.screensOffTimer)
+            this.screensOffTimer = null
+        } else if (left) {
+            this.startScreensOffTimer()
+        }
+    }
+
+    startScreensOffTimer() {
+        clearTimeout(this.screensOffTimer)
+        this.screensOffTimer = null
+        const minutes = this.screensOffMinutes
+        if (minutes > 0 && !this.screensOn) {
+            this.screensOffTimer = setTimeout(() => this.checkScreensOffStandby(), minutes * 60 * 1000)
+        }
+    }
+
+    // A TV that's already off, or was turned on again by hand, is left alone. So is one
+    // showing its own apps, though that's looked at again later in case they get closed.
+    async checkScreensOffStandby() {
+        this.screensOffTimer = null
+        if (!this.isPaired || this.screensOn || this.tracker.state !== "on" || this.wakeAfterSleep) return
+        // There'd be no way to bring it back when the screens return
+        if (!this.config.wakeMacs?.length) return
+        if (this.status.displayActive === false) return
+
+        let showingPC = false
+        try {
+            showingPC = await this.tv.isShowingExternalInput()
+        } catch (e) {
+            this.logOnChange("screensOff", `couldn't check what the TV is showing: ${e.message}`)
+        }
+        if (this.screensOn) return
+        if (!showingPC || Date.now() < this.wakingUntil) return this.startScreensOffTimer()
+        if (!(await this.tv.isOn()) || this.screensOn) return
+
+        this.wakeAfterSleep = true
+        try {
+            await this.apiCommand(tv => tv.standby())
+            this.standbySentAt = Date.now()
+            this.clearStandbyFailure()
+            console.log("NetworkTV: TV sent to standby since the screens are off")
+        } catch (e) {
+            this.wakeAfterSleep = false
+            console.log("NetworkTV: couldn't send the TV to standby:", e.message)
+            this.startScreensOffTimer()
         }
     }
 
@@ -571,7 +635,7 @@ class NetworkTV extends EventEmitter {
             this.wakingUntil = Date.now() + WAKE_GRACE_MS
             await wakeOnLan(macs, tv.host)
         } else {
-            await this.apiCommand(tv => tv.sendKey("Standby"))
+            await this.apiCommand(tv => tv.standby())
             this.clearStandbyFailure()
         }
     }
@@ -596,7 +660,8 @@ class NetworkTV extends EventEmitter {
 
     // A TV that was already off when the PC went to sleep stays off when it wakes
     handleSuspend() {
-        if (this.config.followSleep !== false && this.tracker.state === "on") {
+        // It may still look like it's on after being sent to standby for the screens
+        if (this.config.followSleep !== false && this.tracker.state === "on" && !this.wakeAfterSleep) {
             this.wakeAfterSleep = true
             const sent = this.sendStandbyAndWait()
             console.log("NetworkTV: TV sent to standby for sleep:", sent)
@@ -611,13 +676,23 @@ class NetworkTV extends EventEmitter {
     // this waits for a screen to come on rather than following the resume event.
     handleDisplayOn() {
         if (!this.wakeAfterSleep) return
+        // A TV on its way to standby still looks on, so a wake now would do nothing
+        const settling = this.standbySentAt + STANDBY_SETTLE_MS - Date.now()
+        if (settling > 0) {
+            clearTimeout(this.wakeRetryTimer)
+            this.wakeRetryTimer = setTimeout(() => {
+                if (this.screensOn) this.handleDisplayOn()
+            }, settling)
+            return
+        }
         this.wakeAfterSleep = false
         console.log("NetworkTV: waking the TV after sleep")
         return this.wakeUntilOn()
     }
 
     standbyBeforeExit() {
-        if (!this.config.standbyOnShutdown) return false
+        // It may still look like it's on after being sent to standby for the screens
+        if (!this.config.standbyOnShutdown || this.wakeAfterSleep) return false
         const wasOn = this.tracker.state === "on"
         const sent = this.sendStandbyAndWait()
         if (wasOn) this.recordStandbyResult(sent, "shutdown")

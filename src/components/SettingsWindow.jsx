@@ -894,11 +894,12 @@ export default class SettingsWindow extends PureComponent {
             if (this.state.monitors == undefined || Object.keys(this.state.monitors).length == 0) {
                 return (<SettingsChild title={T.t("GENERIC_NO_COMPATIBLE_DISPLAYS")} />)
             } else {
-                return Object.values(this.state.monitors).map((monitor, index) => {
-                    const enabled = (this.state.rawSettings?.extendMinimumDisplays?.[monitor.key] ? true : false)
+                // The rest have no brightness to extend, like a TV, which has its own dim slider
+                return Object.values(this.state.monitors).filter(monitor => ["ddcci", "wmi", "studio-display"].includes(monitor.type)).map((monitor, index) => {
+                    const enabled = (this.state.rawSettings?.extendMinimumDisplays?.[monitor.key] !== false)
 
                     return (
-                        <SettingsChild key={monitor.key} className="breakpoint-child" icon="E7F4" title={getMonitorName(monitor, this.state.names)} description={this.getGammaHDRNotice(monitor)} input={
+                        <SettingsChild key={monitor.key} className="breakpoint-child" icon="E7F4" title={getMonitorName(monitor, this.state.names)} input={
                             <>
                                 <div className="breakpoint-field" data-enabled={enabled} title={T.t("SETTINGS_MONITORS_EXTEND_MINIMUM_BREAKPOINT")}>
                                     <input type="number" min={EXTEND_MINIMUM_BREAKPOINT_MIN} max={EXTEND_MINIMUM_BREAKPOINT_MAX} disabled={!enabled} value={this.state.breakpointDrafts[monitor.key] ?? this.getExtendMinimumBreakpoint(monitor)} onChange={(e) => { this.setExtendMinimumBreakpointDraft(e.target.value, monitor) }} onBlur={(e) => { this.setExtendMinimumBreakpoint(e.target.value, monitor) }} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur() }} />
@@ -1496,7 +1497,7 @@ export default class SettingsWindow extends PureComponent {
                                     <SettingsOption title={T.t("SETTINGS_MONITORS_GAMMA_SLIDER_TITLE")} description={T.t("SETTINGS_MONITORS_GAMMA_SLIDER_DESCRIPTION")} expandable={true}>
                                         {this.getGammaMonitorsSettings()}
                                     </SettingsOption>
-                                    <SettingsOption title={T.t("SETTINGS_MONITORS_EXTEND_MINIMUM_TITLE")} description={T.t("SETTINGS_MONITORS_EXTEND_MINIMUM_DESCRIPTION")} expandable={true}>
+                                    <SettingsOption title={T.t("SETTINGS_MONITORS_EXTEND_MINIMUM_TITLE")} description={T.t("SETTINGS_MONITORS_EXTEND_MINIMUM_DESCRIPTION")} tooltip={T.t("SETTINGS_MONITORS_EXTEND_MINIMUM_TIP")} expandable={true}>
                                         {this.getExtendMinimumMonitorsSettings()}
                                     </SettingsOption>
                                     <SettingsOption title={T.t("SETTINGS_MONITORS_SDR_SLIDER_TITLE")} description={T.t("SETTINGS_MONITORS_SDR_SLIDER_DESCRIPTION")} expandable={true}>
