@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react"
 import Slider from "./Slider"
 import PanelStatus from "./PanelStatus"
+import IconButton from "./IconButton"
+import BlackoutButton from "./BlackoutButton"
 
 // Throttled so dragging a slider doesn't queue up a request per pixel. The
 // last value always gets sent, so the slider never stops short of where it ended.
@@ -21,25 +23,26 @@ function useLatestSender(send, delay = 150) {
     }
 }
 
-function IconButton({ icon, label, onClick, active = false, disabledReason = false }) {
-    const disabled = !!disabledReason
-    return (
-        <button
-            type="button"
-            className="tv-button"
-            aria-label={label}
-            aria-pressed={active}
-            aria-disabled={disabled}
-            title={disabled && disabledReason !== true ? `${label}: ${disabledReason}` : label}
-            onClick={disabled ? undefined : onClick}>
-            <span className="icon" dangerouslySetInnerHTML={{ __html: icon }}></span>
-        </button>
-    )
-}
+const REMOTE_BUTTONS = [
+    { button: "back", icon: "&#xE72B;", label: "PANEL_TV_REMOTE_BACK" },
+    { button: "up", icon: "&#xE70E;", label: "PANEL_TV_REMOTE_UP" },
+    { button: "home", icon: "&#xE80F;", label: "PANEL_TV_REMOTE_HOME" },
+    { button: "left", icon: "&#xE76B;", label: "PANEL_TV_REMOTE_LEFT" },
+    { button: "ok", icon: "&#xE73E;", label: "PANEL_TV_REMOTE_OK" },
+    { button: "right", icon: "&#xE76C;", label: "PANEL_TV_REMOTE_RIGHT" },
+    { button: "down", icon: "&#xE70D;", label: "PANEL_TV_REMOTE_DOWN" }
+]
+
+const AMBILIGHT_GROUPS = [
+    { group: "video", label: "PANEL_TV_AMBILIGHT_VIDEO" },
+    { group: "audio", label: "PANEL_TV_AMBILIGHT_AUDIO" },
+    { group: "color", label: "PANEL_TV_AMBILIGHT_COLOR" }
+]
 
 export default function NetworkTVCard({ T }) {
     const [control, setControl] = useState(window.displayControl)
     const [error, setError] = useState(false)
+    const [showRemote, setShowRemote] = useState(false)
 
     useEffect(() => {
         const handleUpdate = e => setControl(e.detail)
@@ -80,6 +83,7 @@ export default function NetworkTVCard({ T }) {
                     <div className="icon"><span>&#xE7F4;</span></div>
                     <div className="title">{tv.name || T.t("PANEL_TV_NAME")}</div>
                     <div className="panel-card-state">{statusText}</div>
+                    {display ? <BlackoutButton T={T} monitorKey={display.key} /> : null}
                 </div>
             </div>
             <div className="tv-buttons" role="toolbar" aria-label={tv.name || T.t("PANEL_TV_NAME")}>
@@ -95,7 +99,26 @@ export default function NetworkTVCard({ T }) {
                 {display?.active && display.hdr !== "unsupported" ? <IconButton icon="&#xE790;" label={T.t("PANEL_TV_HDR")} active={display.hdr === "on"} onClick={() => run("display.setHDR", { key: display.key, on: display.hdr !== "on" })} /> : null}
                 <IconButton icon={tv.muted ? "&#xE74F;" : "&#xE767;"} label={T.t("PANEL_TV_MUTE")} active={!!tv.muted} disabledReason={offReason} onClick={() => run("tv.toggleMute")} />
                 <IconButton icon="&#xE793;" label={T.t("PANEL_TV_AMBILIGHT")} active={!!tv.ambilight} disabledReason={offReason} onClick={() => run("tv.ambilight", { on: !tv.ambilight })} />
+                <IconButton icon="&#xE7C2;" label={T.t("PANEL_TV_REMOTE")} active={showRemote && !offReason} disabledReason={offReason} onClick={() => setShowRemote(!showRemote)} />
             </div>
+            {showRemote && !offReason ? (
+                <div className="tv-remote" role="group" aria-label={T.t("PANEL_TV_REMOTE")}>
+                    {REMOTE_BUTTONS.map(({ button, icon, label }) => <div key={button} className={`tv-remote-${button}`}><IconButton icon={icon} label={T.t(label)} onClick={() => run("tv.remote", { button })} /></div>)}
+                </div>
+            ) : null}
+            {isOn && tv.ambilight && tv.ambilightStyles?.length ? (
+                <div className="feature-row" title={T.t("PANEL_TV_AMBILIGHT_STYLE")}>
+                    <div className="feature-icon"><span className="icon vfix">&#xE793;</span></div>
+                    <select className="tv-select" aria-label={T.t("PANEL_TV_AMBILIGHT_STYLE")} value={tv.ambilightStyle ?? ""} onChange={e => run("tv.ambilightStyle", { id: e.target.value })}>
+                        {tv.ambilightStyle ? null : <option value="" disabled>{T.t("PANEL_TV_AMBILIGHT_CUSTOM")}</option>}
+                        {AMBILIGHT_GROUPS.map(({ group, label }) => (
+                            <optgroup key={group} label={T.t(label)}>
+                                {tv.ambilightStyles.filter(style => style.group === group).map(style => <option key={style.id} value={style.id}>{style.name}</option>)}
+                            </optgroup>
+                        ))}
+                    </select>
+                </div>
+            ) : null}
             {isOn && tv.volume !== null ? (
                 <div className="feature-row" title={T.t("PANEL_TV_VOLUME")}>
                     <div className="feature-icon"><span className="icon vfix">&#xE767;</span></div>

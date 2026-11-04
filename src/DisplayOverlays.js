@@ -11,21 +11,31 @@ const SWP_NOACTIVATE = 0x0010
 const TOPMOST_CHECK_MS = 5000
 const PLACEMENT_RETRY_MS = 250
 
+// A blacked out display takes clicks, since a click on it is how to bring it back. That
+// has to work when its taskbar is what's covered, and it keeps clicks off hidden windows.
+const OVERLAY_PAGE = "data:text/html,<style>html,body{height:100%25;margin:0;background:%23000}</style><body onmousedown=\"document.title='restore'+Date.now()\"></body>"
+
 class DisplayOverlays {
-    constructor() {
+    constructor({ onRestore = () => { } } = {}) {
+        this.onRestore = onRestore
         this.overlays = new Map()
         this.topmostTimer = null
     }
 
-    // Each entry is { bounds: { x, y, width, height }, level }, in physical pixels
+    // Each entry is { key, bounds: { x, y, width, height }, level, blackout }, in physical pixels
     apply(entries) {
         // Mirrored displays share a desktop area, and stacking overlays would dim twice
         const wanted = new Map()
-        for (const { bounds, level } of entries) {
-            if (!bounds || !(level < 100)) continue
+        for (const { key, bounds, level, blackout = false } of entries) {
+            if (!bounds || !(level < 100 || blackout)) continue
             const id = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`
             const existing = wanted.get(id)
-            wanted.set(id, { bounds, level: Math.min(level, existing?.level ?? 100) })
+            wanted.set(id, {
+                bounds,
+                level: Math.min(level, existing?.level ?? 100),
+                blackout: blackout || !!existing?.blackout,
+                keys: [...(existing?.keys ?? []), key]
+            })
         }
 
         for (const [id, overlay] of this.overlays) {
@@ -35,13 +45,26 @@ class DisplayOverlays {
             }
         }
 
-        for (const [id, { bounds, level }] of wanted) {
+        for (const [id, { bounds, level, blackout, keys }] of wanted) {
             let overlay = this.overlays.get(id)
             if (!overlay) {
-                overlay = { window: this.createWindow(bounds), bounds }
+                overlay = { window: this.createWindow(bounds), bounds, blackout: false }
+                const created = overlay
+                overlay.window.webContents.on("page-title-updated", (event, title) => {
+                    if (created.blackout && title.startsWith("restore")) this.onRestore(created.keys)
+                })
+                // Clicks can't reach a page that's gone, so don't leave the screen black
+                overlay.window.webContents.on("render-process-gone", () => {
+                    if (created.blackout) this.onRestore(created.keys)
+                })
                 this.overlays.set(id, overlay)
             }
-            overlay.window.setOpacity((100 - Math.max(MINIMUM_DIM_LEVEL, level)) / 100)
+            overlay.keys = keys
+            if (overlay.blackout !== blackout) {
+                overlay.blackout = blackout
+                overlay.window.setIgnoreMouseEvents(!blackout)
+            }
+            overlay.window.setOpacity(blackout ? 1 : (100 - Math.max(MINIMUM_DIM_LEVEL, level)) / 100)
         }
 
         if (this.overlays.size && !this.topmostTimer) {
@@ -77,7 +100,7 @@ class DisplayOverlays {
         window.setAlwaysOnTop(true, "screen-saver")
         // Screenshots and screen sharing should show the real picture
         window.setContentProtection(true)
-        window.loadURL("data:text/html,<body style='background:%23000'></body>")
+        window.loadURL(OVERLAY_PAGE)
         window.setOpacity(0)
         window.showInactive()
         this.place(window, bounds)

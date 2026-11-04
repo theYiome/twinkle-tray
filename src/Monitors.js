@@ -879,7 +879,12 @@ getAllMonitors = async (ddcciMethod = "default", coreOnly = false) => {
             if(brightness) {
                 ddcciInfo.brightnessValues = brightness
                 features[vcpStr(brightnessType)] = brightness
-            }       
+                lastReadBrightness[hwid2] = brightness
+            } else if(brightnessType && lastReadBrightness[hwid2]) {
+                // Better than the placeholder, which would be shown as if it was read
+                ddcciInfo.brightnessValues = lastReadBrightness[hwid2]
+            }
+            ddcciInfo.brightnessUnread = !!(brightnessType && !brightness)
 
             ddcciInfo.brightnessRaw = ddcciInfo.brightnessValues[0]
             ddcciInfo.brightnessMax = ddcciInfo.brightnessValues[1]
@@ -1398,6 +1403,7 @@ getMonitorsWin32 = () => {
 }
 
 const ddcHandleRetry = new NullHandleRetry({ wait })
+const lastReadBrightness = {}
 
 getFeaturesDDC = (ddcciMethod = "accurate", coreOnly = false) => {
     const monitorFeatures = {}

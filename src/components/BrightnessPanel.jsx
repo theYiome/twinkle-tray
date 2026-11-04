@@ -5,6 +5,7 @@ import HDRSliders from "./HDRSliders";
 import TranslateReact from "../TranslateReact"
 import getMonitorName from "../utils/BrightnessPanel/getMonitorName";
 import { usesGammaSlider, isAdjustableDisplay } from "./utilts/monitor.util";
+import BlackoutButton from "./BlackoutButton";
 import NetworkTVCard from "./NetworkTVCard";
 import NightLightCard from "./NightLightCard";
 
@@ -293,13 +294,14 @@ const BrightnessPanel = memo(function BrightnessPanel() {
               }
               const powerOff = () => {
                 window.ipc.send("sleep-display", monitor.hwid.join("#"))
-                monitor.features["0xD6"][0] = (monitor.features["0xD6"][0] >= 4 ? 1 : settings.ddcPowerOffValue)
+                if (monitor.features?.["0xD6"]) monitor.features["0xD6"][0] = (monitor.features["0xD6"][0] >= 4 ? 1 : settings.ddcPowerOffValue)
               }
               const showPowerButton = () => {
                 const customFeatureEnabled = window.settings?.monitorFeaturesSettings?.[monitor?.hwid[1]]?.["0xD6"]
-                if (monitorFeatures?.["0xD6"] && (monitor.features?.["0xD6"] || customFeatureEnabled)) {
-                  return (<div className="feature-power-icon simple" onClick={powerOff}><span className="icon vfix">&#xE7E8;</span><span>{(monitor.features?.["0xD6"][0] >= 4 ? T.t("PANEL_LABEL_TURN_ON") : T.t("PANEL_LABEL_TURN_OFF"))}</span></div>)
-                }
+                const powerButton = (monitorFeatures?.["0xD6"] && (monitor.features?.["0xD6"] || customFeatureEnabled))
+                  ? (<div className="feature-power-icon simple" onClick={powerOff}><span className="icon vfix">&#xE7E8;</span><span>{(monitor.features?.["0xD6"]?.[0] >= 4 ? T.t("PANEL_LABEL_TURN_ON") : T.t("PANEL_LABEL_TURN_OFF"))}</span></div>)
+                  : null
+                return (<>{powerButton}<BlackoutButton T={T} monitorKey={monitor.key} /></>)
               }
 
               // Check if it's an HDR display and only supports SDR brightness adjustment.

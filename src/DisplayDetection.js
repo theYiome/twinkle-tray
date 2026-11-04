@@ -45,4 +45,47 @@ class NullHandleRetry {
     }
 }
 
-module.exports = { parseDisplayHwid, NullHandleRetry, NULL_HANDLE_RETRY_MS }
+const DDC_RECHECK_DELAYS_MS = [3000, 10000, 30000]
+
+// Monitors can be slow to answer right after starting up or waking, and a scan then
+// loses their features or shows a made-up brightness. That can't be told apart from a
+// display that really can't do better, so this only tries a few times after each wake.
+class DDCRecheck {
+    constructor() {
+        this.everSupported = new Set()
+        this.attempts = 0
+    }
+
+    // Keys of the displays that look like they were read wrong
+    suspects(monitors) {
+        const found = []
+        for (const monitor of Object.values(monitors)) {
+            if (monitor.ddcciSupported) this.everSupported.add(monitor.key)
+            const lostDDC = (!monitor.ddcciSupported && (monitor.type === "ddcci" || this.everSupported.has(monitor.key)))
+            if (lostDDC || (monitor.brightnessUnread && monitor.type === "ddcci")) found.push(monitor.key)
+        }
+        return found
+    }
+
+    // Returns how long to wait before looking again, or null if there's no need to
+    review(monitors) {
+        const found = this.suspects(monitors)
+        if (!found.length) {
+            // A first look that's still missing its features doesn't prove anything yet
+            if (!Object.values(monitors).some(monitor => monitor.featuresPending)) this.attempts = 0
+            return null
+        }
+        const delay = DDC_RECHECK_DELAYS_MS[this.attempts]
+        return (delay === undefined ? null : { delay, keys: found })
+    }
+
+    attempted() {
+        this.attempts++
+    }
+
+    restart() {
+        this.attempts = 0
+    }
+}
+
+module.exports = { parseDisplayHwid, NullHandleRetry, NULL_HANDLE_RETRY_MS, DDCRecheck, DDC_RECHECK_DELAYS_MS }

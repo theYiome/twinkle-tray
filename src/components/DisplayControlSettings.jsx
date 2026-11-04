@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react"
 import Slider from "./Slider"
 import { SettingsOption, SettingsChild } from "./SettingsOption"
+import { groupModes, refreshRateForResolution } from "../DisplayModes"
 
 const send = (command, args) => window.sendDisplayControl(command, args)
 
@@ -103,6 +104,62 @@ function PairedTV({ T, tv, displays }) {
     )
 }
 
+function DisplayModePicker({ T, display, run }) {
+    const [info, setInfo] = useState(null)
+    const [secondsLeft, setSecondsLeft] = useState(0)
+
+    // What's on offer depends on the current connection, so it's read again on any change
+    useEffect(() => {
+        let stale = false
+        send("display.modes", { key: display.key }).then(response => {
+            if (!stale && response.ok) setInfo(response.result)
+        })
+        return () => { stale = true }
+    }, [display.key, display.bounds?.width, display.bounds?.height, display.modeRevertsAt])
+
+    useEffect(() => {
+        if (!display.modeRevertsAt) return setSecondsLeft(0)
+        const update = () => setSecondsLeft(Math.max(0, Math.ceil((display.modeRevertsAt - Date.now()) / 1000)))
+        update()
+        const interval = setInterval(update, 500)
+        return () => clearInterval(interval)
+    }, [display.modeRevertsAt])
+
+    if (!info?.modes?.length) return null
+    const groups = groupModes(info.modes)
+    const { current } = info
+    const selected = groups.find(group => group.width === current.width && group.height === current.height)
+    if (!selected) return null
+
+    return (
+        <>
+            <SettingsChild title={T.t("SETTINGS_DISPLAYS_MODE_TITLE")} tooltip={T.t("SETTINGS_DISPLAYS_MODE_TIP")} input={(
+                <>
+                    <select aria-label={T.t("SETTINGS_DISPLAYS_MODE_RESOLUTION")} value={selected.id} onChange={e => {
+                        const group = groups.find(entry => entry.id === e.target.value)
+                        run("display.setMode", { width: group.width, height: group.height, refreshRate: refreshRateForResolution(group, current.refreshRate) })
+                    }}>
+                        {groups.map(group => <option key={group.id} value={group.id}>{group.width} × {group.height}</option>)}
+                    </select>
+                    {" "}
+                    <select aria-label={T.t("SETTINGS_DISPLAYS_MODE_REFRESH")} value={current.refreshRate} onChange={e => run("display.setMode", { width: current.width, height: current.height, refreshRate: parseInt(e.target.value) })}>
+                        {selected.refreshRates.map(rate => <option key={rate} value={rate}>{rate} Hz</option>)}
+                    </select>
+                </>
+            )} />
+            {display.modeRevertsAt ? (
+                <SettingsChild title={T.t("SETTINGS_DISPLAYS_MODE_CONFIRM", secondsLeft)} input={(
+                    <>
+                        <a className="button" onClick={() => run("display.keepMode")}>{T.t("SETTINGS_DISPLAYS_MODE_KEEP")}</a>
+                        {" "}
+                        <a className="button" onClick={() => run("display.revertMode")}>{T.t("SETTINGS_DISPLAYS_MODE_REVERT")}</a>
+                    </>
+                )} />
+            ) : null}
+        </>
+    )
+}
+
 function DisplayRow({ T, display }) {
     const [error, setError] = useState(false)
     const run = async (command, args) => {
@@ -126,6 +183,15 @@ function DisplayRow({ T, display }) {
                     <Slider level={display.dim} min={5} max={100} onChange={level => run("display.dim", { level })} scrollAmount={2} syncLevel={true} />
                 </SettingsChild>
             ) : null}
+            {display.active ? (
+                <SettingsChild title={T.t("SETTINGS_DISPLAYS_BLACKOUT_TITLE")} tooltip={T.t("SETTINGS_DISPLAYS_BLACKOUT_TIP")} input={(
+                    <div className="inputToggle-generic" data-textside="right">
+                        <input type="checkbox" checked={display.blackedOut} data-checked={display.blackedOut} onChange={e => run("display.blackout", { on: e.target.checked })} />
+                        <div className="text">{display.blackedOut ? T.t("GENERIC_ON") : T.t("GENERIC_OFF")}</div>
+                    </div>
+                )} />
+            ) : null}
+            {display.active ? <DisplayModePicker T={T} display={display} run={run} /> : null}
             {display.active && display.hdr !== "unsupported" ? (
                 <SettingsChild title={T.t("SETTINGS_DISPLAYS_HDR_TITLE")} description={T.t("SETTINGS_DISPLAYS_HDR_DESC")} tooltip={T.t("SETTINGS_DISPLAYS_HDR_TIP")} input={(
                     <div className="inputToggle-generic" data-textside="right">

@@ -432,6 +432,7 @@ module.exports.listDisplayTargets = async () => {
       const target = targets.get(name.monitorDevicePath);
       target.active = true;
       target.sourceId = sourceInfo.id;
+      target.sourceConfigId = { adapterId: sourceInfo.adapterId, id: sourceInfo.id };
       target.sourceMode = config.modeArray[sourceInfo.modeInfoIdx]?.value?.sourceMode;
     }
   }
@@ -475,6 +476,63 @@ module.exports.setDisplayActive = async ({ devicePath, active, mirrorDevicePath 
         }
       }
     );
+    if (!ran) {
+      reject(new Win32Error(87));
+    }
+  });
+};
+
+/**
+ * @typedef DisplayMode
+ * @type {object}
+ * @property {number} width
+ * @property {number} height
+ * @property {number} refreshRate In whole hertz, as Windows reports it for this API
+ */
+
+async function findActiveTarget(devicePath) {
+  const targets = await module.exports.listDisplayTargets();
+  const target = targets.find((entry) => entry.devicePath === devicePath);
+  if (target === undefined || !target.active) {
+    throw new Win32Error(1168); // ERROR_NOT_FOUND
+  }
+  return target;
+}
+
+/**
+ * Lists what a display in use can be set to, along with what it's set to now.
+ *
+ * @param {string} devicePath Exact Windows NT device path of the display
+ * @returns {Promise<{ current: DisplayMode, modes: DisplayMode[] }>}
+ */
+module.exports.listDisplayModes = async (devicePath) => {
+  const target = await findActiveTarget(devicePath);
+  const result = addon.win32_listDisplayModes(target.sourceConfigId);
+  if (result === null) {
+    throw new Win32Error(1610); // ERROR_BAD_CONFIGURATION
+  }
+  return result;
+};
+
+/**
+ * Changes a display's resolution and refresh rate. Windows checks the mode first, so
+ * one it can't use is refused and leaves the display as it was.
+ *
+ * @param {string} devicePath Exact Windows NT device path of the display
+ * @param {DisplayMode} mode
+ * @param {object} [options]
+ * @param {boolean} [options.save] Keep it across restarts. Otherwise it lasts until then.
+ */
+module.exports.setDisplayMode = async (devicePath, mode, { save = false } = {}) => {
+  const target = await findActiveTarget(devicePath);
+  await new Promise((resolve, reject) => {
+    const ran = addon.win32_setDisplayMode(target.sourceConfigId, { ...mode, save }, (_, result) => {
+      if (result === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Windows refused that display mode (${result}).`));
+      }
+    });
     if (!ran) {
       reject(new Win32Error(87));
     }

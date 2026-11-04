@@ -5,7 +5,7 @@
 const { EventEmitter } = require("events")
 const path = require("path")
 const { Worker } = require("worker_threads")
-const { PhilipsTV, wakeOnLan, discover } = require("./PhilipsTV")
+const { PhilipsTV, wakeOnLan, discover, AMBILIGHT_STYLES, ambilightStyleId } = require("./PhilipsTV")
 
 const POLL_MS = 4000
 // Volume and Ambilight cost an HTTPS connection each per read, since the TV closes
@@ -159,6 +159,7 @@ class NetworkTV extends EventEmitter {
             volumeMax: 60,
             muted: null,
             ambilight: null,
+            ambilightStyle: null,
             displayActive: null,
             mirrored: false,
             api: "unknown"
@@ -236,6 +237,7 @@ class NetworkTV extends EventEmitter {
             followSleep: this.config.followSleep !== false,
             keepScreenSaverAway: this.config.keepScreenSaverAway !== false,
             screensOffStandbyMinutes: this.screensOffMinutes,
+            ambilightStyles: AMBILIGHT_STYLES.map(({ id, group, name }) => ({ id, group, name })),
             disconnectedAutomatically: !!this.config.disconnectedAutomatically,
             canWake: !!this.config.wakeMacs?.length,
             standbyFailure: this.config.standbyFailure ?? null,
@@ -475,6 +477,7 @@ class NetworkTV extends EventEmitter {
         await read(async () => {
             const ambilight = await this.tv.getAmbilightConfig()
             changes.ambilight = !!ambilight
+            changes.ambilightStyle = ambilightStyleId(ambilight)
             if (ambilight) this.rememberAmbilight(ambilight)
         })
 
@@ -499,7 +502,7 @@ class NetworkTV extends EventEmitter {
         if (!state) return
         console.log(`NetworkTV: control API is now ${state}: ${e.message}`)
         // Don't keep showing values that can no longer be read or changed
-        this.setStatus({ api: state, volume: null, muted: null, ambilight: null })
+        this.setStatus({ api: state, volume: null, muted: null, ambilight: null, ambilightStyle: null })
     }
 
     // Runs a command against the API. Commands are always attempted, even during an
@@ -764,6 +767,18 @@ class NetworkTV extends EventEmitter {
             ? tv.setAmbilightConfig(this.config.ambilightStyle ?? { styleName: "FOLLOW_VIDEO", isExpert: false, menuSetting: "STANDARD" })
             : tv.turnOffAmbilight()))
         this.setStatus({ ambilight: on })
+        // Reading it back also saves the style, for the next time it's turned on
+        this.readStateSoon()
+    }
+
+    async setAmbilightStyle(id) {
+        await this.apiCommand(tv => tv.setAmbilightStyle(id))
+        this.setStatus({ ambilight: true, ambilightStyle: id })
+        this.readStateSoon()
+    }
+
+    async pressButton(button) {
+        await this.apiCommand(tv => tv.pressButton(button))
     }
 
     async sendKey(key) {

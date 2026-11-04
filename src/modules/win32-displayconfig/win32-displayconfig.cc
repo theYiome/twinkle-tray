@@ -1068,6 +1068,127 @@ Napi::Value Win32SetTargetActive(const Napi::CallbackInfo &info) {
     return Napi::Boolean::New(info.Env(), true);
 }
 
+// The display modes API works on the GDI name of a source, like \\.\DISPLAY1
+BOOL GetSourceGdiName(const struct Win32TransientDeviceId &source, WCHAR *gdiName) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME request = {};
+    request.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    request.header.size = sizeof(request);
+    request.header.adapterId = source.adapterId;
+    request.header.id = source.id;
+    if (DisplayConfigGetDeviceInfo(&request.header) != ERROR_SUCCESS) {
+        return FALSE;
+    }
+    wcscpy_s(gdiName, CCHDEVICENAME, request.viewGdiDeviceName);
+    return TRUE;
+}
+
+Napi::Object DisplayModeToObject(Napi::Env env, const DEVMODEW &mode) {
+    auto ret = Napi::Object::New(env);
+    ret.Set("width", Napi::Number::New(env, mode.dmPelsWidth));
+    ret.Set("height", Napi::Number::New(env, mode.dmPelsHeight));
+    ret.Set("refreshRate", Napi::Number::New(env, mode.dmDisplayFrequency));
+    return ret;
+}
+
+Napi::Value Win32ListDisplayModes(const Napi::CallbackInfo &info) {
+    Napi::Env env = info.Env();
+    struct Win32TransientDeviceId source = {};
+    WCHAR gdiName[CCHDEVICENAME] = {};
+    if (info.Length() < 1 || !ExtractTransientDeviceId(info[0], &source) || !GetSourceGdiName(source, gdiName)) {
+        return env.Null();
+    }
+
+    DEVMODEW current = {};
+    current.dmSize = sizeof(current);
+    if (!EnumDisplaySettingsW(gdiName, ENUM_CURRENT_SETTINGS, &current)) {
+        return env.Null();
+    }
+
+    auto modes = Napi::Array::New(env);
+    uint32_t count = 0;
+    std::vector<std::vector<DWORD>> seen;
+    DEVMODEW mode = {};
+    mode.dmSize = sizeof(mode);
+    for (DWORD index = 0; EnumDisplaySettingsW(gdiName, index, &mode); index++) {
+        if (mode.dmDisplayFlags & DM_INTERLACED) {
+            continue;
+        }
+        const std::vector<DWORD> id{mode.dmPelsWidth, mode.dmPelsHeight, mode.dmDisplayFrequency};
+        if (std::find(seen.begin(), seen.end(), id) != seen.end()) {
+            continue;
+        }
+        seen.push_back(id);
+        modes.Set(count++, DisplayModeToObject(env, mode));
+    }
+
+    auto ret = Napi::Object::New(env);
+    ret.Set("current", DisplayModeToObject(env, current));
+    ret.Set("modes", modes);
+    return ret;
+}
+
+class Win32SetDisplayModeWorker : public Napi::AsyncWorker {
+   public:
+    Win32SetDisplayModeWorker(Napi::Function &callback, struct Win32TransientDeviceId source, DWORD width, DWORD height, DWORD refreshRate, BOOL save)
+        : Napi::AsyncWorker(callback), source(source), width(width), height(height), refreshRate(refreshRate), save(save) {}
+
+    void Execute() {
+        WCHAR gdiName[CCHDEVICENAME] = {};
+        if (!GetSourceGdiName(this->source, gdiName)) {
+            this->result = DISP_CHANGE_BADPARAM;
+            return;
+        }
+
+        DEVMODEW mode = {};
+        mode.dmSize = sizeof(mode);
+        mode.dmPelsWidth = this->width;
+        mode.dmPelsHeight = this->height;
+        mode.dmDisplayFrequency = this->refreshRate;
+        mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+
+        this->result = ChangeDisplaySettingsExW(gdiName, &mode, NULL, CDS_TEST, NULL);
+        if (this->result == DISP_CHANGE_SUCCESSFUL) {
+            this->result = ChangeDisplaySettingsExW(gdiName, &mode, NULL, this->save ? CDS_UPDATEREGISTRY : 0, NULL);
+        }
+    }
+
+    std::vector<napi_value> GetResult(Napi::Env env) {
+        std::vector<napi_value> result{env.Null(), Napi::Number::New(env, (double)this->result)};
+        return result;
+    }
+
+   private:
+    struct Win32TransientDeviceId source;
+    DWORD width;
+    DWORD height;
+    DWORD refreshRate;
+    BOOL save;
+    LONG result = DISP_CHANGE_FAILED;
+};
+
+Napi::Value Win32SetDisplayMode(const Napi::CallbackInfo &info) {
+    if (info.Length() < 3 || !info[1].IsObject() || !info[2].IsFunction()) {
+        return Napi::Boolean::New(info.Env(), false);
+    }
+
+    struct Win32TransientDeviceId source = {};
+    if (!ExtractTransientDeviceId(info[0], &source)) {
+        return Napi::Boolean::New(info.Env(), false);
+    }
+
+    auto mode = info[1].As<Napi::Object>();
+    auto callback = info[2].As<Napi::Function>();
+    auto worker = new Win32SetDisplayModeWorker(
+        callback,
+        source,
+        mode.Get("width").ToNumber().Uint32Value(),
+        mode.Get("height").ToNumber().Uint32Value(),
+        mode.Get("refreshRate").ToNumber().Uint32Value(),
+        mode.Get("save").ToBoolean().Value());
+    worker->Queue();
+    return Napi::Boolean::New(info.Env(), true);
+}
+
 class Win32RestoreDisplayConfigWorker : public Napi::AsyncWorker {
    public:
     Win32RestoreDisplayConfigWorker(Napi::Function &callback, std::shared_ptr<std::vector<struct Win32RestoreDisplayConfigDevice>> configs, BOOL persistent)
@@ -1206,6 +1327,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("win32_toggleEnabledDisplays", Napi::Function::New(env, Win32ToggleEnabledDisplays));
     exports.Set("win32_restoreDisplayConfig", Napi::Function::New(env, Win32RestoreDisplayConfig));
     exports.Set("win32_setTargetActive", Napi::Function::New(env, Win32SetTargetActive));
+    exports.Set("win32_listDisplayModes", Napi::Function::New(env, Win32ListDisplayModes));
+    exports.Set("win32_setDisplayMode", Napi::Function::New(env, Win32SetDisplayMode));
 
     // Take note: while none of these functions are meant to be called directly in JavaScript,
     // these two in particular _depend_ on ordering enforced by JavaScript to function correctly.

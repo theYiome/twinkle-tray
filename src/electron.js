@@ -82,7 +82,9 @@ const refreshCtx = new VerticalRefreshRateContext();
 const w32disp = require("win32-displayconfig");
 const { NetworkTV } = require("./NetworkTV");
 const { DisplayOverlays } = require("./DisplayOverlays");
-const { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, combineDimLevels } = require("./DimRange");
+const { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, convertSliderLevel, combineDimLevels } = require("./DimRange");
+const { DisplayModeChanges } = require("./DisplayModes");
+const { DDCRecheck } = require("./DisplayDetection");
 const { DisplayHDR } = require("./DisplayHDR");
 const { NightLight } = require("./NightLight");
 const { DisplayLayouts } = require("./DisplayLayouts");
@@ -1463,6 +1465,11 @@ function getExtendedMinimumBreakpoint(monitor) {
   return breakpoint
 }
 
+// What this display's slider level is relative to, or null if it's just its brightness
+function sliderBreakpoint(monitor) {
+  return (usesExtendedMinimum(monitor) ? getExtendedMinimumBreakpoint(monitor) : null)
+}
+
 // Displays whose hardware we pinned at its floor for the extended range
 const extendedMinimumPinned = new Set()
 
@@ -1719,6 +1726,17 @@ function setKnownBrightness(useCurrentMonitors = false, useTransition = false, t
   console.log(`\x1b[36mSetting brightness for known displays\x1b[0m`, useCurrentMonitors, useTransition, transitionSpeed)
 
   const known = getKnownDisplays(useCurrentMonitors)
+
+  // Saved levels are slider positions, whose meaning depends on the extended range.
+  // One saved before that was turned on, or with another breakpoint, gets converted.
+  for (const key in known) {
+    const monitor = known[key]
+    if (!(monitor?.brightness >= 0)) continue
+    const breakpoint = sliderBreakpoint(monitor)
+    monitor.brightness = convertSliderLevel(monitor.brightness, monitor.sliderBreakpoint ?? null, breakpoint)
+    monitor.sliderBreakpoint = breakpoint
+  }
+
   applyProfile(known, useTransition, transitionSpeed)
 
   // Brightness alone won't restore a ramp that an event cleared, since the
@@ -2809,11 +2827,12 @@ function commitRefreshedMonitors(newMonitors, oldMonitors = {}) {
       monitor.brightnessRaw = monitor.gammaBrightness
     }
 
-    // Fold the gamma ramp into the bottom of the slider range
+    // Fold the extra dimming into the bottom of the slider range
     if(usesExtendedMinimum(monitor)) {
       releaseExtendedMinimumRamp(monitor, monitor.brightness)
       monitor.brightness = getExtendedMinimumLevel(monitor, monitor.brightness)
     }
+    monitor.sliderBreakpoint = sliderBreakpoint(monitor)
 
     // Other DDC/CI normalizations
     const featuresSettings = settings.monitorFeaturesSettings?.[monitor.hwid[1]]
@@ -2838,6 +2857,22 @@ function commitRefreshedMonitors(newMonitors, oldMonitors = {}) {
   } else {
     console.log("===--- NO CHANGE ---===")
   }
+
+  scheduleDDCRecheck()
+}
+
+const ddcRecheck = new DDCRecheck()
+let ddcRecheckTimeout = false
+
+function scheduleDDCRecheck() {
+  clearTimeout(ddcRecheckTimeout)
+  const next = ddcRecheck.review(monitors)
+  if (!next) return
+  console.log(`Monitors that may have been read wrong: ${next.keys.join(", ")}. Reading them again in ${next.delay}ms.`)
+  ddcRecheckTimeout = setTimeout(() => {
+    ddcRecheck.attempted()
+    refreshMonitors(true, true).catch(e => console.log("Couldn't read the monitors again", e))
+  }, next.delay)
 }
 
 async function recoverFromCapabilitiesTimeout(generation) {
@@ -3755,7 +3790,21 @@ ipcMain.on('save-report', async () => {
 //
 //
 
-const displayOverlays = new DisplayOverlays()
+const blackedOutDisplays = new Set()
+const displayOverlays = new DisplayOverlays({
+  onRestore: keys => {
+    keys.forEach(key => blackedOutDisplays.delete(key))
+    applyDisplayOverlays()
+    sendDisplayControlState()
+  }
+})
+const displayModeChanges = new DisplayModeChanges({
+  setMode: async (key, mode, options) => {
+    await w32disp.setDisplayMode(requireDisplayTarget(key).devicePath, mode, options)
+    scheduleDisplayControlRefresh()
+  },
+  onChange: () => sendDisplayControlState()
+})
 const displayHDR = new DisplayHDR({ native: require("windows-hdr") })
 const nightLight = new NightLight({ reg })
 nightLight.on("changed", () => sendDisplayControlState())
@@ -3843,6 +3892,8 @@ function getDisplayControlState() {
       active: target.active,
       bounds: targetBounds(target),
       dim: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100,
+      blackedOut: blackedOutDisplays.has(displayKeyFromPath(target.devicePath)),
+      modeRevertsAt: displayModeChanges.revertsAt(displayKeyFromPath(target.devicePath)),
       hdr: displayHDR.stateOf(target.devicePath),
       mirroredWith: (target.active
         ? displayTargets.filter(other => other !== target && other.active && other.sourceId === target.sourceId).map(other => other.displayName)
@@ -3875,13 +3926,43 @@ async function refreshDisplayControl() {
 }
 
 function applyDisplayOverlays() {
+  // A display that's gone doesn't come back blacked out
+  for (const key of blackedOutDisplays) {
+    if (!displayTargets.some(target => target.active && displayKeyFromPath(target.devicePath) === key)) blackedOutDisplays.delete(key)
+  }
   displayOverlays.apply(displayTargets.filter(target => target.active).map(target => {
     const key = displayKeyFromPath(target.devicePath)
     return {
+      key,
       bounds: targetBounds(target),
-      level: combineDimLevels(settings.displayDimLevels?.[key] ?? 100, settings.extendedDimLevels?.[key] ?? 100)
+      level: combineDimLevels(settings.displayDimLevels?.[key] ?? 100, settings.extendedDimLevels?.[key] ?? 100),
+      blackout: blackedOutDisplays.has(key)
     }
   }))
+}
+
+function setDisplayBlackout(key, on) {
+  const target = requireDisplayTarget(key)
+  if (on && !target.active) throw Object.assign(new Error("That display isn't connected."), { status: 400 })
+  if (on) {
+    blackedOutDisplays.add(key)
+  } else {
+    blackedOutDisplays.delete(key)
+  }
+  applyDisplayOverlays()
+  sendDisplayControlState()
+}
+
+function getDisplayModes(key) {
+  return w32disp.listDisplayModes(requireDisplayTarget(key).devicePath)
+}
+
+async function setDisplayMode(key, { width, height, refreshRate }) {
+  const { current, modes } = await getDisplayModes(key)
+  const mode = modes.find(entry => entry.width === width && entry.height === height && entry.refreshRate === refreshRate)
+  if (!mode) throw Object.assign(new Error("That display doesn't have that mode."), { status: 400 })
+  if (current.width === width && current.height === height && current.refreshRate === refreshRate) return
+  await displayModeChanges.change(key, current, mode)
 }
 
 function scheduleDisplayControlRefresh() {
@@ -4007,11 +4088,18 @@ const displayControlCommands = {
   "tv.volume": ({ level }) => networkTV.setVolume(level),
   "tv.toggleMute": () => networkTV.toggleMute(),
   "tv.ambilight": ({ on }) => networkTV.setAmbilight(!!on),
+  "tv.ambilightStyle": ({ id }) => networkTV.setAmbilightStyle(id),
+  "tv.remote": ({ button }) => networkTV.pressButton(button),
   "tv.dismissStandbyFailure": () => networkTV.clearStandbyFailure(),
   "tv.key": ({ key }) => sendTVKey(key),
   "display.setActive": ({ key, active, extend }) => setDisplayActive(key, !!active, !!extend),
   "display.moveWindows": ({ key }) => moveWindowsOffDisplay(key),
   "display.dim": ({ key, level }) => setDisplayDim(key, level),
+  "display.blackout": ({ key, on }) => setDisplayBlackout(key, !!on),
+  "display.modes": ({ key }) => getDisplayModes(key),
+  "display.setMode": ({ key, width, height, refreshRate }) => setDisplayMode(key, { width, height, refreshRate }),
+  "display.keepMode": ({ key }) => displayModeChanges.keep(key),
+  "display.revertMode": ({ key }) => displayModeChanges.revert(key),
   "display.setHDR": ({ key, on }) => setDisplayHDR(key, !!on),
   "nightLight.adjust": async ({ level }) => {
     await nightLight.adjust(level)
@@ -4056,11 +4144,17 @@ const localAPI = new LocalAPI({
     "POST /tv/volume": ({ level }) => networkTV.setVolume(level),
     "POST /tv/mute/toggle": () => networkTV.toggleMute(),
     "POST /tv/ambilight": ({ on }) => networkTV.setAmbilight(!!on),
+    "POST /tv/ambilight/style": ({ id }) => networkTV.setAmbilightStyle(id),
+    "POST /tv/remote": ({ button }) => networkTV.pressButton(button),
     "POST /tv/key": ({ key }) => sendTVKey(key),
     "POST /displays/:key/connect": (body, { key }) => setDisplayActive(key, true, !!body.extend),
     "POST /displays/:key/disconnect": (body, { key }) => setDisplayActive(key, false),
     "POST /displays/:key/move-windows": (body, { key }) => moveWindowsOffDisplay(key),
     "POST /displays/:key/dim": ({ level }, { key }) => setDisplayDim(key, level),
+    "POST /displays/:key/blackout": ({ on }, { key }) => setDisplayBlackout(key, !!on),
+    "GET /displays/:key/modes": (body, { key }) => getDisplayModes(key),
+    "POST /displays/:key/mode": ({ width, height, refreshRate }, { key }) => setDisplayMode(key, { width, height, refreshRate }),
+    "POST /displays/:key/mode/keep": (body, { key }) => displayModeChanges.keep(key),
     "POST /displays/:key/brightness": ({ level }, { key }) => setMonitorBrightness(key, level),
     "POST /displays/:key/hdr": ({ on }, { key }) => setDisplayHDR(key, !!on),
     "POST /night-light": ({ level }) => nightLight.setLevel(level),
@@ -5563,6 +5657,7 @@ function handleDisplaysWokeUp() {
   if(!isWindowsUserIdle) return
   isWindowsUserIdle = false
   console.log("Displays have woken up.")
+  ddcRecheck.restart()
   // The worker isn't started while the displays are off, so if the app was opened
   // then, it's still waiting to. Its "ready" event finishes the rest of startup.
   startMonitorThread()

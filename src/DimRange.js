@@ -18,9 +18,18 @@ function sliderLevelForHardware(hardware, breakpoint) {
     return Math.round(breakpoint + (hardware * (100 - breakpoint) / 100))
 }
 
+// Moves a saved slider level to a different mapping, so it keeps meaning the same
+// brightness. A breakpoint of null means the slider was the display's own brightness.
+function convertSliderLevel(level, fromBreakpoint, toBreakpoint) {
+    if (fromBreakpoint === toBreakpoint) return level
+    if (fromBreakpoint && level < fromBreakpoint) return (toBreakpoint ? Math.round(level * toBreakpoint / fromBreakpoint) : 0)
+    const hardware = (fromBreakpoint ? splitSliderLevel(level, fromBreakpoint).hardware : level)
+    return (toBreakpoint ? sliderLevelForHardware(hardware, toBreakpoint) : Math.round(hardware))
+}
+
 // A display can also have its own dim slider, and the two add up
 function combineDimLevels(first, second) {
     return Math.round(first * second / 100)
 }
 
-module.exports = { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, combineDimLevels }
+module.exports = { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, convertSliderLevel, combineDimLevels }

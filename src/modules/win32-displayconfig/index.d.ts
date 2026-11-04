@@ -173,6 +173,15 @@ export interface SetDisplayActiveArgs {
 
 export function setDisplayActive(args: SetDisplayActiveArgs): Promise<void>;
 
+export interface DisplayMode {
+  width: number;
+  height: number;
+  refreshRate: number;
+}
+
+export function listDisplayModes(devicePath: string): Promise<{ current: DisplayMode; modes: DisplayMode[] }>;
+export function setDisplayMode(devicePath: string, mode: DisplayMode, options?: { save?: boolean }): Promise<void>;
+
 export function toggleEnabledDisplays(
   args: ToggleEnabledDisplayArgs
 ): Promise<void>;

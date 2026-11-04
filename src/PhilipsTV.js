@@ -27,6 +27,37 @@ const MIN_REQUEST_GAP_MS = 700
 // Philips' app secret for signing pairing grants. It's the same for every client.
 const PAIRING_KEY = Buffer.from("ZmVay1EQVFOaZhwQ4Kv81ypLAZNczV9sG4KkseXWn1NEk6cXmPKO/MCa9sryslvLCFMnNe4Z4CPXzToowvhHvA==", "base64")
 
+const REMOTE_KEYS = {
+    up: "CursorUp",
+    down: "CursorDown",
+    left: "CursorLeft",
+    right: "CursorRight",
+    ok: "Confirm",
+    back: "Back",
+    home: "Home"
+}
+
+// Each of these was set on a 48OLED770 and read back. The names are the TV's own.
+const AMBILIGHT_STYLES = [
+    ...[["STANDARD", "Standard"], ["NATURAL", "Natural"], ["VIVID", "Vivid"], ["GAME", "Game"], ["COMFORT", "Comfort"], ["RELAX", "Relax"], ["SPORTS", "Sports"]]
+        .map(([setting, name]) => ({ id: `FOLLOW_VIDEO:${setting}`, group: "video", name, styleName: "FOLLOW_VIDEO", setting })),
+    ...[["ENERGY_ADAPTIVE_BRIGHTNESS", "Lumina"], ["ENERGY_ADAPTIVE_COLORS", "Colora"], ["VU_METER", "Retro"], ["SPECTRUM_ANALYZER", "Spectrum"], ["PARTY", "Party"]]
+        .map(([setting, name]) => ({ id: `FOLLOW_AUDIO:${setting}`, group: "audio", name, styleName: "FOLLOW_AUDIO", setting })),
+    ...[["HOT_LAVA", "Hot Lava"], ["DEEP_WATER", "Deep Water"], ["FRESH_NATURE", "Fresh Nature"], ["ISF", "Warm White"], ["PTA_LOUNGE", "Cool White"]]
+        .map(([setting, name]) => ({ id: `FOLLOW_COLOR:${setting}`, group: "color", name, styleName: "FOLLOW_COLOR", setting }))
+]
+
+// The TV reports the current style as a menu setting whichever way it was set, but
+// only takes most of the audio ones as an algorithm.
+function ambilightStyleConfig({ styleName, setting }) {
+    return { styleName, isExpert: false, ...(styleName === "FOLLOW_AUDIO" ? { algorithm: setting } : { menuSetting: setting }) }
+}
+
+function ambilightStyleId(config) {
+    const id = `${config?.styleName}:${config?.menuSetting ?? config?.algorithm}`
+    return (AMBILIGHT_STYLES.some(style => style.id === id) ? id : null)
+}
+
 // The TV uses a self-signed certificate that doesn't name it
 const agent = new https.Agent({ rejectUnauthorized: false })
 
@@ -222,6 +253,11 @@ class PhilipsTV {
         return this.request("POST", "/input/key", { key })
     }
 
+    pressButton(button) {
+        if (!Object.hasOwn(REMOTE_KEYS, button)) throw new TVError(`There's no "${button}" button.`, "unsupported")
+        return this.sendKey(REMOTE_KEYS[button])
+    }
+
     // Only call this on a TV that's on, since the key is a toggle that could wake one
     standby() {
         return this.sendKey("Standby")
@@ -239,7 +275,14 @@ class PhilipsTV {
     }
 
     setAmbilightConfig(config) {
-        return this.request("POST", "/ambilight/currentconfiguration", config)
+        const style = AMBILIGHT_STYLES.find(entry => entry.id === ambilightStyleId(config))
+        return this.request("POST", "/ambilight/currentconfiguration", style ? ambilightStyleConfig(style) : config)
+    }
+
+    setAmbilightStyle(id) {
+        const style = AMBILIGHT_STYLES.find(entry => entry.id === id)
+        if (!style) throw new TVError("This TV doesn't have that Ambilight style.", "unsupported")
+        return this.setAmbilightConfig(ambilightStyleConfig(style))
     }
 
     // The "OFF" style and "ambilight/power" are acknowledged but ignored. Only the
@@ -352,4 +395,4 @@ function discover(timeout = 3000) {
     })
 }
 
-module.exports = { PhilipsTV, TVError, wakeOnLan, discover, getCastName }
+module.exports = { PhilipsTV, TVError, wakeOnLan, discover, getCastName, AMBILIGHT_STYLES, ambilightStyleId }
