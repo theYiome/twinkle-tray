@@ -18,8 +18,22 @@ enum DISPLAYCONFIG_DEVICE_INFO_TYPE_INTERNAL {
 // this builds with older SDKs; on older Windows the call simply fails and
 // the legacy path is used.
 enum {
-    TT_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 = 15
+    TT_DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE = 10,
+    TT_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 = 15,
+    TT_DISPLAYCONFIG_DEVICE_INFO_SET_HDR_STATE = 16
 };
+
+// Both "set" requests use this layout
+typedef struct _TT_DISPLAYCONFIG_SET_HDR {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    union {
+        struct {
+            UINT32 enable : 1;
+            UINT32 reserved : 31;
+        };
+        UINT32 value;
+    };
+} TT_DISPLAYCONFIG_SET_HDR;
 
 typedef enum _TT_DISPLAYCONFIG_ADVANCED_COLOR_MODE {
     TT_DISPLAYCONFIG_ADVANCED_COLOR_MODE_SDR = 0,
@@ -122,6 +136,26 @@ boolean setSDRBrightness(DISPLAYCONFIG_PATH_INFO target, int desiredNits, bool s
     }
 
     return true;
+}
+
+LONG pathSetHDRRequest(DISPLAYCONFIG_PATH_INFO path, int requestType, bool enable) {
+    TT_DISPLAYCONFIG_SET_HDR request = {};
+    request.header.type = (DISPLAYCONFIG_DEVICE_INFO_TYPE) requestType;
+    request.header.size = sizeof(request);
+    request.header.adapterId = path.targetInfo.adapterId;
+    request.header.id = path.targetInfo.id;
+    request.enable = enable ? 1 : 0;
+
+    return DisplayConfigSetDeviceInfo(&request.header);
+}
+
+// Windows 11 24H2 split HDR from Auto Color Management and gave it its own request.
+// Older Windows rejects that one, and only has the combined "advanced color" setting.
+bool setHDR(DISPLAYCONFIG_PATH_INFO path, bool enable) {
+    if (pathSetHDRRequest(path, TT_DISPLAYCONFIG_DEVICE_INFO_SET_HDR_STATE, enable) == ERROR_SUCCESS) {
+        return true;
+    }
+    return pathSetHDRRequest(path, TT_DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE, enable) == ERROR_SUCCESS;
 }
 
 std::map<std::string, Display> getDisplays() {
@@ -300,9 +334,24 @@ Napi::Boolean nodeSetSDRBrightness(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), result);
 }
 
+Napi::Boolean nodeSetHDR(const Napi::CallbackInfo& info) {
+    if(info.Length() != 2 || !info[0].IsString() || !info[1].IsBoolean()) {
+        fprintf(stderr, "Invalid parameters.\n");
+        return Napi::Boolean::New(info.Env(), false);
+    }
+    std::string path = info[0].As<Napi::String>();
+    bool enable = info[1].As<Napi::Boolean>();
+
+    std::map<std::string, Display> displays = getDisplays();
+    auto display = displays.find(path);
+
+    return Napi::Boolean::New(info.Env(), display != displays.end() && setHDR(display->second.target, enable));
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, nodeGetDisplays));
     exports.Set(Napi::String::New(env, "setSDRBrightness"), Napi::Function::New(env, nodeSetSDRBrightness));
+    exports.Set(Napi::String::New(env, "setHDR"), Napi::Function::New(env, nodeSetHDR));
     return exports;
 }
 

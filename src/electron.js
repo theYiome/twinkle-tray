@@ -83,6 +83,7 @@ const refreshCtx = new VerticalRefreshRateContext();
 const w32disp = require("win32-displayconfig");
 const { NetworkTV } = require("./NetworkTV");
 const { DisplayOverlays, MINIMUM_LEVEL: MINIMUM_DIM_LEVEL } = require("./DisplayOverlays");
+const { DisplayHDR } = require("./DisplayHDR");
 const { DisplayLayouts } = require("./DisplayLayouts");
 const { LocalAPI } = require("./LocalAPI");
 
@@ -3810,6 +3811,7 @@ ipcMain.on('save-report', async () => {
 //
 
 const displayOverlays = new DisplayOverlays()
+const displayHDR = new DisplayHDR({ native: require("windows-hdr") })
 const displayLayouts = new DisplayLayouts(path.join(configFilesDir, `display-layouts${(isDev ? "-dev" : "")}.json`))
 const displayControlSecretsPath = path.join(configFilesDir, `display-control${(isDev ? "-dev" : "")}.secrets`)
 let displayTargets = []
@@ -3883,6 +3885,7 @@ function getDisplayControlState() {
       active: target.active,
       bounds: targetBounds(target),
       dim: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100,
+      hdr: displayHDR.stateOf(target.devicePath),
       mirroredWith: (target.active
         ? displayTargets.filter(other => other !== target && other.active && other.sourceId === target.sourceId).map(other => other.displayName)
         : [])
@@ -3904,6 +3907,7 @@ function sendDisplayControlState() {
 async function refreshDisplayControl() {
   try {
     displayTargets = await w32disp.listDisplayTargets()
+    displayHDR.refresh()
     displayOverlays.apply(displayTargets.filter(target => target.active).map(target => ({
       bounds: targetBounds(target),
       level: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100
@@ -3967,6 +3971,25 @@ function setDisplayDim(key, level) {
   return refreshDisplayControl()
 }
 
+// Refreshing the monitors is what brings up the SDR brightness slider
+async function changeDisplayHDR(key, change) {
+  const { devicePath } = requireDisplayTarget(key)
+  try {
+    await change(devicePath)
+  } finally {
+    await refreshDisplayControl()
+    refreshMonitors(true, true).catch(e => console.log("Couldn't refresh monitors after HDR change", e.message))
+  }
+}
+
+function setDisplayHDR(key, on) {
+  return changeDisplayHDR(key, devicePath => displayHDR.set(devicePath, on))
+}
+
+function toggleDisplayHDR(key) {
+  return changeDisplayHDR(key, devicePath => displayHDR.toggle(devicePath))
+}
+
 async function configureLocalAPI({ enabled, port }) {
   const newPort = (port === undefined ? settings.localAPIPort : parseInt(port))
   if (!(newPort >= 1024 && newPort <= 65535)) throw new Error("Pick a port from 1024 to 65535.")
@@ -4020,6 +4043,7 @@ const displayControlCommands = {
   "display.setActive": ({ key, active, extend }) => setDisplayActive(key, !!active, !!extend),
   "display.moveWindows": ({ key }) => moveWindowsOffDisplay(key),
   "display.dim": ({ key, level }) => setDisplayDim(key, level),
+  "display.setHDR": ({ key, on }) => setDisplayHDR(key, !!on),
   "layout.save": async ({ name }) => { await displayLayouts.save(name); sendDisplayControlState() },
   "layout.apply": async ({ name }) => { await displayLayouts.apply(name); await refreshDisplayControl() },
   "layout.delete": ({ name }) => { displayLayouts.delete(name); sendDisplayControlState() },
@@ -4061,6 +4085,7 @@ const localAPI = new LocalAPI({
     "POST /displays/:key/move-windows": (body, { key }) => moveWindowsOffDisplay(key),
     "POST /displays/:key/dim": ({ level }, { key }) => setDisplayDim(key, level),
     "POST /displays/:key/brightness": ({ level }, { key }) => setMonitorBrightness(key, level),
+    "POST /displays/:key/hdr": ({ on }, { key }) => setDisplayHDR(key, !!on),
     "POST /layouts/:name/save": (body, { name }) => displayControlCommands["layout.save"]({ name }),
     "POST /layouts/:name/apply": (body, { name }) => displayControlCommands["layout.apply"]({ name })
   }
@@ -4071,6 +4096,7 @@ const displayControlHotkeys = {
   "tv-mute": () => networkTV.toggleMute(),
   "display-toggle": async ({ display }) => setDisplayActive(display, !requireDisplayTarget(display).active),
   "move-windows": ({ display }) => moveWindowsOffDisplay(display),
+  "display-hdr": ({ display }) => toggleDisplayHDR(display),
   "layout-apply": ({ layout }) => displayControlCommands["layout.apply"]({ name: layout })
 }
 

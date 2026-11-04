@@ -119,8 +119,16 @@ function DisplayRow({ T, display }) {
                     <Slider level={display.dim} min={5} max={100} onChange={level => run("display.dim", { level })} scrollAmount={2} />
                 </SettingsChild>
             ) : null}
+            {display.active && display.hdr !== "unsupported" ? (
+                <SettingsChild title={T.t("SETTINGS_DISPLAYS_HDR_TITLE")} description={T.t("SETTINGS_DISPLAYS_HDR_DESC")} input={(
+                    <div className="inputToggle-generic" data-textside="right">
+                        <input type="checkbox" checked={display.hdr === "on"} data-checked={display.hdr === "on"} onChange={e => run("display.setHDR", { on: e.target.checked })} />
+                        <div className="text">{display.hdr === "on" ? T.t("GENERIC_ON") : T.t("GENERIC_OFF")}</div>
+                    </div>
+                )} />
+            ) : null}
             {display.active ? (
-                <SettingsChild title={T.t("SETTINGS_DISPLAYS_MOVE_TITLE")} input={<a className="button" onClick={() => run("display.moveWindows")}>{T.t("PANEL_TV_MOVE_WINDOWS")}</a>} />
+                <SettingsChild title={T.t("SETTINGS_DISPLAYS_MOVE_TITLE")}input={<a className="button" onClick={() => run("display.moveWindows")}>{T.t("PANEL_TV_MOVE_WINDOWS")}</a>} />
             ) : null}
             {error ? <SettingsChild description={error} /> : null}
         </SettingsOption>

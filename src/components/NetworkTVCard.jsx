@@ -75,6 +75,7 @@ export default function NetworkTVCard({ T }) {
                 {display ? button("&#xE7F4;", display.active ? T.t("PANEL_TV_DISCONNECT") : T.t("PANEL_TV_CONNECT"), () => run("display.setActive", { key: display.key, active: !display.active }), { active: display.active }) : null}
                 {display?.mirroredWith?.length ? button("&#xE9A6;", T.t("PANEL_TV_EXTEND"), () => run("display.setActive", { key: display.key, active: true, extend: true })) : null}
                 {display?.active && !display.mirroredWith?.length ? button("&#xE8A7;", T.t("PANEL_TV_MOVE_WINDOWS"), () => run("display.moveWindows", { key: display.key })) : null}
+                {display?.active && display.hdr !== "unsupported" ? button("&#xE790;", T.t("PANEL_TV_HDR"), () => run("display.setHDR", { key: display.key, on: display.hdr !== "on" }), { active: display.hdr === "on" }) : null}
                 {button(tv.muted ? "&#xE74F;" : "&#xE767;", T.t("PANEL_TV_MUTE"), () => run("tv.toggleMute"), { active: tv.muted, disabled: !isOn || controlsUnavailable })}
                 {button("&#xE793;", T.t("PANEL_TV_AMBILIGHT"), () => run("tv.ambilight", { on: !tv.ambilight }), { active: tv.ambilight, disabled: !isOn || controlsUnavailable })}
             </div>

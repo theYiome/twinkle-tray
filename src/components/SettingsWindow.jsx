@@ -1950,7 +1950,7 @@ function SettingsPage(props) {
 
 function ActionItem(props) {
     const { action, monitors, monitorNames } = props
-    const usesDisplayControl = ["tv-power", "tv-mute", "display-toggle", "move-windows", "layout-apply"].includes(action.type)
+    const usesDisplayControl = ["tv-power", "tv-mute", "display-toggle", "move-windows", "display-hdr", "layout-apply"].includes(action.type)
     const showDisplaysList = (action.type != "off" && action.type != "refresh" && !usesDisplayControl)
 
     const getHotkeyMonitors = () => {
@@ -1984,7 +1984,7 @@ function ActionItem(props) {
             return (<div className="input-row"><p style={{lineHeight: 1.2}}>{T.t("SETTINGS_HOTKEY_OFF_WARN")}</p></div>)
         } else if (action.type === "refresh" || action.type === "tv-power" || action.type === "tv-mute") {
             return null
-        } else if (action.type === "display-toggle" || action.type === "move-windows") {
+        } else if (action.type === "display-toggle" || action.type === "move-windows" || action.type === "display-hdr") {
             return (
                 <div className="input-row"><div className="field">
                     <label>{T.t("SETTINGS_HOTKEY_DISPLAY")}</label>
@@ -2137,6 +2137,7 @@ function ActionItem(props) {
                                 <option value="tv-mute">{T.t("SETTINGS_HOTKEY_ACTION_TV_MUTE")}</option>
                                 <option value="display-toggle">{T.t("SETTINGS_HOTKEY_ACTION_DISPLAY_TOGGLE")}</option>
                                 <option value="move-windows">{T.t("SETTINGS_HOTKEY_ACTION_MOVE_WINDOWS")}</option>
+                                <option value="display-hdr">{T.t("SETTINGS_HOTKEY_ACTION_HDR")}</option>
                                 <option value="layout-apply">{T.t("SETTINGS_HOTKEY_ACTION_LAYOUT")}</option>
                             </select>
                         </div>
