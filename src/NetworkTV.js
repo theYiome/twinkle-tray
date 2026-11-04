@@ -392,7 +392,7 @@ class NetworkTV extends EventEmitter {
         } catch (e) {
             if (e.status === "unsupported") throw e
             this.noteApiFailure(e)
-            throw new Error(e.status === 401 ? "The TV no longer accepts this app. Pair it again in Display Control settings." : `The TV's controls aren't responding (${e.message}).`)
+            throw new Error(e.status === 401 ? "The TV no longer accepts this app. Pair it again in Display Control settings." : `TV not responding (${e.message})`)
         }
     }
 

@@ -344,7 +344,7 @@ body[data-is-win11="false"] #root {
             white-space: nowrap;
         }
 
-        .updateBar, .feature-power-icon, .feature-icon, .feature-row + .feature-row, .monitor-sliders.extended + .monitor-sliders.extended:before, .network-tv-card {
+        .updateBar, .feature-power-icon, .feature-icon, .feature-row + .feature-row, .monitor-sliders.extended + .monitor-sliders.extended:before {
             display: none;
         }
 
@@ -457,69 +457,194 @@ body[data-is-win11="false"] #root {
 }
 
 
-.network-tv-card {
-    .tv-status {
-        margin-left: auto;
-        font-size: 12.5px;
-        opacity: 0.7;
+// Cards below the monitors. Spacing follows Windows' 4px grid: 8px between related
+// controls, and 16px between one card and the next.
+$card-icon-column: 32px;
+$card-control-size: 32px;
+$card-gap: 8px;
+
+.panel-card {
+    padding-bottom: 12px;
+
+    & + & {
+        padding-top: 4px;
     }
 
+    .monitor-item {
+        height: auto;
+    }
+
+    .panel-card-state {
+        margin-left: auto;
+        padding-left: $card-gap;
+        font-size: 12px;
+        opacity: 0.75;
+        white-space: nowrap;
+    }
+
+    // These don't depend on the monitors, so a monitor refresh shouldn't lock them
+    #root & .monitor-item .input--range {
+        pointer-events: auto;
+        opacity: 1;
+    }
+
+    .feature-row {
+        height: $card-control-size;
+        margin: 0;
+        padding: 0;
+        margin-top: $card-gap;
+
+        .feature-icon {
+            flex: none;
+            width: $card-icon-column;
+            box-sizing: border-box;
+            justify-content: flex-start;
+            padding: 0;
+            font-size: 18px;
+        }
+    }
+}
+
+.night-light-card .input--range {
+    margin-top: $card-gap;
+}
+
+.network-tv-card {
     .tv-buttons {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px;
-        padding: 0 8px 10px;
+        gap: $card-gap;
+        margin: $card-gap 0 0 $card-icon-column;
     }
 
     .tv-button {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 5px 8px;
+        justify-content: center;
+        flex: none;
+        width: $card-control-size;
+        height: $card-control-size;
+        padding: 0;
+        border: none;
         border-radius: 4px;
+        background: transparent;
         color: var(--tray-text);
-        font-size: 12.5px;
         cursor: pointer;
-        opacity: 0.7;
 
         &:hover {
-            opacity: 1;
             background: rgba(128, 128, 128, 0.2);
         }
 
-        &[data-active="true"] {
-            opacity: 1;
+        &:active {
+            background: rgba(128, 128, 128, 0.12);
         }
 
-        &[data-disabled="true"] {
-            opacity: 0.35;
+        &:focus-visible {
+            outline: 2px solid var(--tray-text);
+            outline-offset: 1px;
+        }
+
+        &[aria-pressed="true"] {
+            background: var(--system-accent-dark1);
+            color: white;
+
+            &:hover {
+                filter: brightness(1.12);
+            }
+
+            @media screen and (prefers-color-scheme: dark) {
+                background: var(--system-accent-light2);
+                color: black;
+            }
+        }
+
+        &[aria-disabled="true"] {
+            background: transparent;
+            filter: none;
+            color: var(--tray-text);
             cursor: default;
-            background: none;
+
+            span.icon {
+                opacity: 0.36;
+            }
         }
 
         span.icon {
-            font-size: 14px !important;
-            font-family: "Segoe MDL2 Assets", "Segoe Fluent Icons";
+            font-size: 16px !important;
+            line-height: 1;
         }
     }
+}
 
-    .tv-note {
-        padding: 2px 12px 10px;
-        font-size: 12px;
-        line-height: 1.35;
+.panel-status {
+    display: flex;
+    align-items: center;
+    gap: $card-gap;
+    min-height: 24px;
+    margin-top: $card-gap;
+    font-size: 12px;
+    line-height: 1.2;
+
+    .panel-status-icon {
+        flex: none;
+        width: 16px;
+        margin-left: ($card-icon-column - 16px - $card-gap);
+        font-size: 14px;
+        text-align: center;
+    }
+
+    .panel-status-text {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &[data-severity="info"] {
         opacity: 0.75;
     }
 
-    .tv-error {
-        opacity: 1;
-        color: #ff8a80;
+    // The same colors Windows' own status messages use, so they read in both themes
+    &[data-severity="warning"] .panel-status-icon {
+        color: #9d5d00;
+        @media screen and (prefers-color-scheme: dark) {
+            color: #fce100;
+        }
     }
 
-    .tv-dismiss {
-        color: inherit;
-        text-decoration: underline;
-        cursor: pointer;
+    &[data-severity="error"] .panel-status-icon {
+        color: #c42b1c;
+        @media screen and (prefers-color-scheme: dark) {
+            color: #ff99a4;
+        }
     }
+
+    .panel-status-dismiss {
+        flex: none;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        color: inherit;
+        font-size: 10px;
+        cursor: pointer;
+
+        &:hover {
+            background: rgba(128, 128, 128, 0.2);
+        }
+
+        &:focus-visible {
+            outline: 2px solid var(--tray-text);
+        }
+    }
+}
+
+// The hotkey overlay is only for brightness
+#root[data-mode="overlay"] .panel-card {
+    display: none;
 }
 
 .monitor-sliders.extended {

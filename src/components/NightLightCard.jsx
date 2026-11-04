@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react"
 import Slider from "./Slider"
+import PanelStatus from "./PanelStatus"
 
 const SEND_INTERVAL_MS = 150
 
@@ -52,19 +53,18 @@ export default function NightLightCard({ T }) {
     const message = error || nightLight.error
 
     return (
-        <div className="monitor-sliders extended network-tv-card night-light-card">
-            <div className="monitor-item" style={{ height: "auto", paddingBottom: "4px" }}>
-                <div className="name-row">
-                    <div className="icon"><span>&#xE708;</span></div>
-                    <div className="title">{T.t("PANEL_NIGHT_LIGHT")}</div>
-                    <div className="tv-status">{status}</div>
-                </div>
-            </div>
-            <div className="feature-row">
-                <div className="feature-icon"><span className="icon vfix">&#xE706;</span></div>
-                <Slider level={level} min={0} max={100} onChange={handleChange} scrollAmount={window.settings?.scrollFlyoutAmount} syncLevel={true} />
-            </div>
-            {message ? <div className="tv-note tv-error">{message}</div> : null}
+        <div className="panel-card night-light-card">
+            <Slider
+                name={T.t("PANEL_NIGHT_LIGHT")}
+                iconGlyph={""}
+                afterName={<div className="panel-card-state">{status}</div>}
+                level={level}
+                min={0}
+                max={100}
+                onChange={handleChange}
+                scrollAmount={window.settings?.scrollFlyoutAmount}
+                syncLevel={true} />
+            {message ? <PanelStatus severity="error" text={message} /> : null}
         </div>
     )
 }

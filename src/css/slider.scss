@@ -50,6 +50,13 @@
             outline: none;
         }
 
+        // Shows which slider the keyboard is on, without appearing on a mouse click
+        &:focus-visible {
+            outline: 2px solid var(--tray-text);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+
         &::-webkit-slider-thumb {
             -webkit-appearance: none;
             height: 24px;

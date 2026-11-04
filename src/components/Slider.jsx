@@ -28,7 +28,7 @@ export default class Slider extends Component {
         if (this.props.name) {
             return (
                 <div className="name-row">
-                    <div className="icon" style={{display: (this.props.icon === false ? "none" : "block")}}>{(this.props.monitortype == "wmi" ? <span>&#xE770;</span> : <span>&#xE7F4;</span>)}</div>
+                    <div className="icon" style={{display: (this.props.icon === false ? "none" : "block")}}>{(this.props.iconGlyph ? <span>{this.props.iconGlyph}</span> : this.props.monitortype == "wmi" ? <span>&#xE770;</span> : <span>&#xE7F4;</span>)}</div>
                     <div className="title">{this.props.name}</div>
                     {this.props.afterName}
                 </div>
@@ -84,10 +84,10 @@ export default class Slider extends Component {
                 {this.getName()}
                 <div className="input--range" data-height={this.props.height}>
                     <div className="rangeGroup">
-                        <input type="range" min={min} max={max} value={level} data-percent={displayLevel(level) + "%"} onChange={this.handleChange} className="range" />
+                        <input type="range" aria-label={this.props.label ?? this.props.name} min={min} max={max} value={level} data-percent={displayLevel(level) + "%"} onChange={this.handleChange} className="range" />
                         <div className="progress" style={this.progressStyle()}></div>
                     </div>
-                    <input type="number" min={min} max={max} value={displayLevel(level)} onChange={this.handleChange} className="val" />
+                    <input type="number" aria-label={this.props.label ?? this.props.name} min={min} max={max} value={displayLevel(level)} onChange={this.handleChange} className="val" />
                 </div>
             </div>
         );

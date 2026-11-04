@@ -14,7 +14,7 @@ export function SettingsOption(props) {
     return (
         <SafeRender>
             <div className={className} data-expandable={props.expandable} data-force-expandable={props.forceExpandable ?? false} data-expanded={expanded}>
-                <div className="parent-panel">
+                <div className="parent-panel" title={props.tooltip}>
                     {icon}
                     <div className="content-area">
                         {title}
@@ -50,7 +50,7 @@ export function SettingsChild(props) {
 
         :
         <div className={className}>
-            <div className="child-panel">
+            <div className="child-panel" title={props.tooltip}>
                 {icon}
                 <div className="content-area">
                     {title}

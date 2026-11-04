@@ -88,10 +88,10 @@ function PairedTV({ T, tv, displays }) {
                     {displays.map(display => <option key={display.devicePath} value={display.devicePath}>{display.name}</option>)}
                 </select>
             )} />
-            <SettingsOption title={T.t("SETTINGS_TV_WAKE_TITLE")} description={T.t("SETTINGS_TV_WAKE_DESC")} input={toggle("wakeOnStartup", tv.wakeOnStartup)} />
-            <SettingsOption title={T.t("SETTINGS_TV_STANDBY_TITLE")} description={T.t("SETTINGS_TV_STANDBY_DESC")} input={toggle("standbyOnShutdown", tv.standbyOnShutdown)} />
-            <SettingsOption title={T.t("SETTINGS_TV_SLEEP_TITLE")} description={T.t("SETTINGS_TV_SLEEP_DESC")} input={toggle("followSleep", tv.followSleep)} />
-            <SettingsOption title={T.t("SETTINGS_TV_AUTO_TITLE")} description={T.t("SETTINGS_TV_AUTO_DESC")} input={toggle("autoDisconnect", tv.autoDisconnect)} />
+            <SettingsOption title={T.t("SETTINGS_TV_WAKE_TITLE")} description={T.t("SETTINGS_TV_WAKE_DESC")} tooltip={T.t("SETTINGS_TV_WAKE_TIP")} input={toggle("wakeOnStartup", tv.wakeOnStartup)} />
+            <SettingsOption title={T.t("SETTINGS_TV_STANDBY_TITLE")} description={T.t("SETTINGS_TV_STANDBY_DESC")} tooltip={T.t("SETTINGS_TV_STANDBY_TIP")} input={toggle("standbyOnShutdown", tv.standbyOnShutdown)} />
+            <SettingsOption title={T.t("SETTINGS_TV_SLEEP_TITLE")} description={T.t("SETTINGS_TV_SLEEP_DESC")} tooltip={T.t("SETTINGS_TV_SLEEP_TIP")} input={toggle("followSleep", tv.followSleep)} />
+            <SettingsOption title={T.t("SETTINGS_TV_AUTO_TITLE")} description={T.t("SETTINGS_TV_AUTO_DESC")} tooltip={T.t("SETTINGS_TV_AUTO_TIP")} input={toggle("autoDisconnect", tv.autoDisconnect)} />
         </>
     )
 }
@@ -115,12 +115,12 @@ function DisplayRow({ T, display }) {
             <a className="button" onClick={() => run("display.setActive", { active: !display.active })}>{display.active ? T.t("PANEL_TV_DISCONNECT") : T.t("PANEL_TV_CONNECT")}</a>
         )}>
             {display.active ? (
-                <SettingsChild title={T.t("SETTINGS_DISPLAYS_DIM_TITLE")} description={T.t("SETTINGS_DISPLAYS_DIM_DESC")}>
+                <SettingsChild title={T.t("SETTINGS_DISPLAYS_DIM_TITLE")} description={T.t("SETTINGS_DISPLAYS_DIM_DESC")} tooltip={T.t("SETTINGS_DISPLAYS_DIM_TIP")}>
                     <Slider level={display.dim} min={5} max={100} onChange={level => run("display.dim", { level })} scrollAmount={2} syncLevel={true} />
                 </SettingsChild>
             ) : null}
             {display.active && display.hdr !== "unsupported" ? (
-                <SettingsChild title={T.t("SETTINGS_DISPLAYS_HDR_TITLE")} description={T.t("SETTINGS_DISPLAYS_HDR_DESC")} input={(
+                <SettingsChild title={T.t("SETTINGS_DISPLAYS_HDR_TITLE")} description={T.t("SETTINGS_DISPLAYS_HDR_DESC")} tooltip={T.t("SETTINGS_DISPLAYS_HDR_TIP")} input={(
                     <div className="inputToggle-generic" data-textside="right">
                         <input type="checkbox" checked={display.hdr === "on"} data-checked={display.hdr === "on"} onChange={e => run("display.setHDR", { on: e.target.checked })} />
                         <div className="text">{display.hdr === "on" ? T.t("GENERIC_ON") : T.t("GENERIC_OFF")}</div>
@@ -146,7 +146,7 @@ function Layouts({ T, layouts }) {
     }
 
     return (
-        <SettingsOption title={T.t("SETTINGS_LAYOUTS_TITLE")} description={T.t("SETTINGS_LAYOUTS_DESC")} startExpanded={true} expandable={true}>
+        <SettingsOption title={T.t("SETTINGS_LAYOUTS_TITLE")} description={T.t("SETTINGS_LAYOUTS_DESC")} tooltip={T.t("SETTINGS_LAYOUTS_TIP")} startExpanded={true} expandable={true}>
             <SettingsChild>
                 <div className="input-row display-control-row">
                     <input type="text" value={name} placeholder={T.t("SETTINGS_LAYOUTS_NAME_PLACEHOLDER")} onChange={e => setName(e.target.value)} />
@@ -168,17 +168,17 @@ function Layouts({ T, layouts }) {
 
 function NightLightSettings({ T, nightLight }) {
     const notes = []
-    if (!nightLight.supported) notes.push(T.t("SETTINGS_NIGHT_LIGHT_UNAVAILABLE"))
-    if (nightLight.perDevice) notes.push(T.t("SETTINGS_NIGHT_LIGHT_PER_DEVICE"))
+    if (!nightLight.supported) notes.push({ text: T.t("SETTINGS_NIGHT_LIGHT_UNAVAILABLE_SHORT"), tooltip: T.t("SETTINGS_NIGHT_LIGHT_UNAVAILABLE") })
+    if (nightLight.perDevice) notes.push({ text: T.t("SETTINGS_NIGHT_LIGHT_PER_DEVICE_SHORT"), tooltip: T.t("SETTINGS_NIGHT_LIGHT_PER_DEVICE") })
 
     return (
-        <SettingsOption title={T.t("SETTINGS_NIGHT_LIGHT_TITLE")} description={T.t("SETTINGS_NIGHT_LIGHT_DESC")} expandable={notes.length > 0} startExpanded={true} input={(
+        <SettingsOption title={T.t("SETTINGS_NIGHT_LIGHT_TITLE")} description={T.t("SETTINGS_NIGHT_LIGHT_DESC")} tooltip={T.t("SETTINGS_NIGHT_LIGHT_TIP")} expandable={notes.length > 0} startExpanded={true} input={(
             <div className="inputToggle-generic" data-textside="right">
                 <input type="checkbox" checked={nightLight.show} data-checked={nightLight.show} onChange={e => send("nightLight.setShown", { show: e.target.checked })} />
                 <div className="text">{nightLight.show ? T.t("GENERIC_ON") : T.t("GENERIC_OFF")}</div>
             </div>
         )}>
-            {notes.map(note => <SettingsChild key={note} description={note} />)}
+            {notes.map(note => <SettingsChild key={note.text} description={note.text} tooltip={note.tooltip} />)}
         </SettingsOption>
     )
 }
@@ -199,7 +199,7 @@ function LocalAPISettings({ T, api }) {
     }
 
     return (
-        <SettingsOption title={T.t("SETTINGS_API_TITLE")} description={T.t("SETTINGS_API_DESC")} expandable={true} startExpanded={api.enabled} input={(
+        <SettingsOption title={T.t("SETTINGS_API_TITLE")} description={T.t("SETTINGS_API_DESC")} tooltip={T.t("SETTINGS_API_TIP")} expandable={true} startExpanded={api.enabled} input={(
             <div className="inputToggle-generic" data-textside="right">
                 <input type="checkbox" checked={api.enabled} data-checked={api.enabled} onChange={e => configure({ enabled: e.target.checked })} />
                 <div className="text">{api.enabled ? T.t("GENERIC_ON") : T.t("GENERIC_OFF")}</div>
