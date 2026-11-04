@@ -514,6 +514,12 @@ body[data-is-win11="false"] #root {
         opacity: 1;
         color: #ff8a80;
     }
+
+    .tv-dismiss {
+        color: inherit;
+        text-decoration: underline;
+        cursor: pointer;
+    }
 }
 
 .monitor-sliders.extended {

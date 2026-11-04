@@ -58,7 +58,7 @@ function TVPairing({ T, tv }) {
                     <a className="button" onClick={search}>{searching ? T.t("SETTINGS_TV_SEARCHING") : T.t("SETTINGS_TV_SEARCH")}</a>
                     <a className="button button-primary" onClick={startPairing}>{T.t("SETTINGS_TV_PAIR")}</a>
                 </div>
-                {found.map(tvFound => <div key={tvFound.host} className="option-description">{tvFound.name} ({tvFound.host})</div>)}
+                {found.map(tvFound => <div key={tvFound.host} className="option-description">{tvFound.apiAvailable ? `${tvFound.name} (${tvFound.host})` : T.t("SETTINGS_TV_API_UNAVAILABLE", tvFound.name, tvFound.host)}</div>)}
                 {secondsLeft > 0 ? (
                     <div className="input-row display-control-row">
                         <input type="text" value={pin} autoFocus={true} placeholder={T.t("SETTINGS_TV_PIN_PLACEHOLDER", secondsLeft)} onChange={e => setPin(e.target.value)} onKeyDown={e => { if (e.key === "Enter") finishPairing() }} />
@@ -90,6 +90,7 @@ function PairedTV({ T, tv, displays }) {
             )} />
             <SettingsOption title={T.t("SETTINGS_TV_WAKE_TITLE")} description={T.t("SETTINGS_TV_WAKE_DESC")} input={toggle("wakeOnStartup", tv.wakeOnStartup)} />
             <SettingsOption title={T.t("SETTINGS_TV_STANDBY_TITLE")} description={T.t("SETTINGS_TV_STANDBY_DESC")} input={toggle("standbyOnShutdown", tv.standbyOnShutdown)} />
+            <SettingsOption title={T.t("SETTINGS_TV_SLEEP_TITLE")} description={T.t("SETTINGS_TV_SLEEP_DESC")} input={toggle("followSleep", tv.followSleep)} />
             <SettingsOption title={T.t("SETTINGS_TV_AUTO_TITLE")} description={T.t("SETTINGS_TV_AUTO_DESC")} input={toggle("autoDisconnect", tv.autoDisconnect)} />
         </>
     )

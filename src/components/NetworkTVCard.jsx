@@ -45,6 +45,8 @@ export default function NetworkTVCard({ T }) {
 
     const display = control.displays?.find(entry => entry.devicePath === tv.displayPath)
     const isOn = tv.power === "on"
+    const controlsUnavailable = tv.api === "down" || tv.api === "unauthorized"
+    const failedAt = tv.standbyFailure && new Date(tv.standbyFailure.at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })
     const statusText = {
         on: T.t("PANEL_TV_STATUS_ON"),
         standby: T.t("PANEL_TV_STATUS_STANDBY"),
@@ -69,12 +71,12 @@ export default function NetworkTVCard({ T }) {
                 </div>
             </div>
             <div className="tv-buttons">
-                {button("&#xE7E8;", isOn ? T.t("PANEL_LABEL_TURN_OFF") : T.t("PANEL_LABEL_TURN_ON"), () => run("tv.togglePower"), { disabled: !isOn && !tv.canWake })}
+                {button("&#xE7E8;", isOn ? T.t("PANEL_LABEL_TURN_OFF") : T.t("PANEL_LABEL_TURN_ON"), () => run("tv.togglePower"), { disabled: isOn ? controlsUnavailable : !tv.canWake })}
                 {display ? button("&#xE7F4;", display.active ? T.t("PANEL_TV_DISCONNECT") : T.t("PANEL_TV_CONNECT"), () => run("display.setActive", { key: display.key, active: !display.active }), { active: display.active }) : null}
                 {display?.mirroredWith?.length ? button("&#xE9A6;", T.t("PANEL_TV_EXTEND"), () => run("display.setActive", { key: display.key, active: true, extend: true })) : null}
                 {display?.active && !display.mirroredWith?.length ? button("&#xE8A7;", T.t("PANEL_TV_MOVE_WINDOWS"), () => run("display.moveWindows", { key: display.key })) : null}
-                {button(tv.muted ? "&#xE74F;" : "&#xE767;", T.t("PANEL_TV_MUTE"), () => run("tv.toggleMute"), { active: tv.muted, disabled: !isOn })}
-                {button("&#xE793;", T.t("PANEL_TV_AMBILIGHT"), () => run("tv.ambilight", { on: !tv.ambilight }), { active: tv.ambilight, disabled: !isOn })}
+                {button(tv.muted ? "&#xE74F;" : "&#xE767;", T.t("PANEL_TV_MUTE"), () => run("tv.toggleMute"), { active: tv.muted, disabled: !isOn || controlsUnavailable })}
+                {button("&#xE793;", T.t("PANEL_TV_AMBILIGHT"), () => run("tv.ambilight", { on: !tv.ambilight }), { active: tv.ambilight, disabled: !isOn || controlsUnavailable })}
             </div>
             {isOn && tv.volume !== null ? (
                 <div className="feature-row">
@@ -90,7 +92,14 @@ export default function NetworkTVCard({ T }) {
             ) : null}
             {display?.mirroredWith?.length ? <div className="tv-note">{T.t("PANEL_TV_MIRROR_NOTE", display.mirroredWith.join(", "))}</div> : null}
             {tv.autoDisconnect && tv.disconnectedAutomatically ? <div className="tv-note">{T.t("PANEL_TV_AUTO_NOTE")}</div> : null}
-            {tv.error === "unauthorized" ? <div className="tv-note">{T.t("PANEL_TV_UNAUTHORIZED")}</div> : null}
+            {tv.api === "unauthorized" ? <div className="tv-note">{T.t("PANEL_TV_UNAUTHORIZED")}</div> : null}
+            {isOn && tv.api === "down" ? <div className="tv-note">{T.t("PANEL_TV_API_DOWN")}</div> : null}
+            {tv.standbyFailure ? (
+                <div className="tv-note tv-error">
+                    {T.t(tv.standbyFailure.reason === "sleep" ? "PANEL_TV_SLEEP_FAILED" : "PANEL_TV_SHUTDOWN_FAILED", failedAt)}
+                    {" "}<a className="tv-dismiss" onClick={() => run("tv.dismissStandbyFailure")}>{T.t("PANEL_TV_DISMISS")}</a>
+                </div>
+            ) : null}
             {error ? <div className="tv-note tv-error">{error}</div> : null}
         </div>
     )

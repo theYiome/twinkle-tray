@@ -903,6 +903,7 @@ const defaultSettings = {
   order: [],
   monitorFeatures: {},
   monitorFeaturesSettings: {},
+  autoFeaturesApplied: {},
   hideDisplays: {},
   disableDDCDisplays: {},
   hdrDisplays: {},
@@ -2800,6 +2801,35 @@ function clearFeaturesPendingAfterEnrichmentFailure() {
   }
 }
 
+// Turns these on the first time a monitor model reports them. It only happens
+// once per model, so a feature that's later switched off in settings stays off.
+function autoEnableDetectedFeatures() {
+  const monitorFeatures = Object.assign({}, settings.monitorFeatures)
+  const autoFeaturesApplied = Object.assign({}, settings.autoFeaturesApplied)
+  let changed = false
+
+  for (const monitor of Object.values(monitors)) {
+    const id = monitor?.hwid?.[1]
+    if (!id || monitor.type !== "ddcci" || monitor.featuresPending || monitor.featuresRefreshing || autoFeaturesApplied[id]) continue
+
+    const { features } = monitor
+    const detected = []
+    if (features?.["0x12"]) detected.push("0x12")
+    if (features?.["0xD6"]) detected.push("0xD6")
+    if (Array.isArray(features?.["0x60"]?.[1]) && features["0x60"][1].length) detected.push("0x60")
+    if (!detected.length) continue
+
+    monitorFeatures[id] = Object.assign({}, monitorFeatures[id])
+    for (const vcp of detected) {
+      if (monitorFeatures[id][vcp] === undefined) monitorFeatures[id][vcp] = true
+    }
+    autoFeaturesApplied[id] = true
+    changed = true
+  }
+
+  if (changed) writeSettings({ monitorFeatures, autoFeaturesApplied })
+}
+
 function commitRefreshedMonitors(newMonitors, oldMonitors = {}) {
   applyOrder(newMonitors)
   applyRemaps(newMonitors)
@@ -2843,6 +2873,7 @@ function commitRefreshedMonitors(newMonitors, oldMonitors = {}) {
   lastCompletedRefresh = Date.now()
   lightSensor.setMonitors(monitors)
   flushDeferredFeatureUpdates()
+  autoEnableDetectedFeatures()
 
   if (JSON.stringify(newMonitors) !== JSON.stringify(oldMonitors)) {
     setTrayPercent()
@@ -3698,6 +3729,7 @@ ipcMain.on('panel-height', (event, height) => {
 ipcMain.on('panel-hidden', () => {
   sendToAllWindows("display-mode", "normal")
   panelState = "hidden"
+  networkTV.setWatched(false)
   if (settings.killWhenIdle) mainWindow.close()
 })
 
@@ -3810,7 +3842,16 @@ function getLocalAPIToken() {
 
 const networkTV = new NetworkTV({
   getConfig: () => settings.networkTV,
-  setConfig: changes => writeSettings({ networkTV: Object.assign({}, settings.networkTV, changes) }, false),
+  setConfig: (changes, { saveNow = false } = {}) => {
+    writeSettings({ networkTV: Object.assign({}, settings.networkTV, changes) }, false)
+    if (saveNow) {
+      try {
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, '\t'))
+      } catch (e) {
+        debug.error("Couldn't save settings.", settingsPath, e)
+      }
+    }
+  },
   loadCredentials: () => readDisplayControlSecrets().tv,
   saveCredentials: tv => writeDisplayControlSecrets({ tv }),
   displays: {
@@ -3959,8 +4000,9 @@ const displayControlCommands = {
   "tv.pairStart": ({ host }) => networkTV.startPairing(host),
   "tv.pairFinish": ({ pin }) => networkTV.finishPairing(pin),
   "tv.forget": () => networkTV.forget(),
-  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown }) => {
+  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown, followSleep }) => {
     const changes = {}
+    if (followSleep !== undefined) changes.followSleep = !!followSleep
     if (autoDisconnect !== undefined) changes.autoDisconnect = !!autoDisconnect
     if (wakeOnStartup !== undefined) changes.wakeOnStartup = !!wakeOnStartup
     if (standbyOnShutdown !== undefined) changes.standbyOnShutdown = !!standbyOnShutdown
@@ -3973,6 +4015,7 @@ const displayControlCommands = {
   "tv.volume": ({ level }) => networkTV.setVolume(level),
   "tv.toggleMute": () => networkTV.toggleMute(),
   "tv.ambilight": ({ on }) => networkTV.setAmbilight(!!on),
+  "tv.dismissStandbyFailure": () => networkTV.clearStandbyFailure(),
   "tv.key": ({ key }) => sendTVKey(key),
   "display.setActive": ({ key, active, extend }) => setDisplayActive(key, !!active, !!extend),
   "display.moveWindows": ({ key }) => moveWindowsOffDisplay(key),
@@ -4043,8 +4086,9 @@ async function startDisplayControl() {
   await startLocalAPI()
 }
 
-powerMonitor.on("suspend", () => networkTV.pause())
+powerMonitor.on("suspend", () => networkTV.handleSuspend())
 powerMonitor.on("resume", () => networkTV.restartPolling())
+powerMonitor.on("unlock-screen", () => networkTV.handleDisplayOn())
 
 //
 //
@@ -4202,6 +4246,10 @@ function createPanel(toggleOnLoad = false, isRefreshing = false, showOnLoad = tr
     const setting = PowerEvents.getPowerSetting(lParam.readBigUInt64LE(0))
     if(setting.name !== "" || setting.guid) {
       console.log(`Event: ${setting.name || setting.guid} (${setting.data})`)
+    }
+
+    if((setting.name === "GUID_CONSOLE_DISPLAY_STATE" || setting.name === "GUID_MONITOR_POWER_ON") && setting.data === 1) {
+      networkTV.handleDisplayOn()
     }
 
     if(setting.name === "GUID_SESSION_USER_PRESENCE") {
@@ -4667,6 +4715,7 @@ function showPanel(show = true, height = 300) {
     isAnimatingPanel = false
     sendToAllWindows("display-mode", "normal")
     panelState = "hidden"
+    networkTV.setWatched(false)
     sendToAllWindows("closePanelAnimation")
     if (!settings.useAcrylic || !settings.useNativeAnimation) {
       tryVibrancy(mainWindow, false)
@@ -5070,6 +5119,7 @@ const toggleTray = async (doRefresh = true, isOverlay = false) => {
       sendToAllWindows("display-mode", "normal")
       showPanel(true, panelSize.height)
       panelState = "visible"
+      networkTV.setWatched(true)
       mainWindow.focus()
     } else {
       sendToAllWindows("display-mode", "overlay")

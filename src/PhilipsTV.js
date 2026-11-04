@@ -11,12 +11,14 @@
 
 const crypto = require("crypto")
 const dgram = require("dgram")
+const http = require("http")
 const https = require("https")
 const net = require("net")
 const os = require("os")
 
 const API_PORT = 1926
 const CAST_PORT = 8009
+const CAST_INFO_PORT = 8008
 const REQUEST_TIMEOUT = 8000
 
 // Philips' app secret for signing pairing grants. It's the same for every client.
@@ -202,7 +204,7 @@ class PhilipsTV {
     async turnOffAmbilight() {
         const structure = await this.request("GET", "/menuitems/settings/structure")
         const nodeId = findMenuNode(structure?.node, "ambilight_off")?.node_id
-        if (nodeId === undefined) throw new TVError("Ambilight off isn't available on this TV")
+        if (nodeId === undefined) throw new TVError("Ambilight off isn't available on this TV", "unsupported")
         await this.request("POST", "/menuitems/settings/update", {
             values: [{ value: { Nodeid: nodeId, nodeid: nodeId, node_id: nodeId } }]
         })
@@ -217,6 +219,28 @@ function findMenuNode(node, context) {
         if (found) return found
     }
     return undefined
+}
+
+// The Cast receiver keeps answering when the control API doesn't, so it can still
+// identify the TV. Titan OS leaves "undefined_" placeholders in front of the model.
+function getCastName(host, timeout = 3000) {
+    return new Promise(resolve => {
+        const req = http.get({ host, port: CAST_INFO_PORT, path: "/setup/eureka_info?params=name", timeout }, res => {
+            let text = ""
+            res.setEncoding("utf8")
+            res.on("data", chunk => text += chunk)
+            res.on("end", () => {
+                try {
+                    const name = JSON.parse(text).name
+                    resolve(typeof name === "string" ? name.replace(/^(undefined_)+/, "") : null)
+                } catch (e) {
+                    resolve(null)
+                }
+            })
+        })
+        req.on("timeout", () => req.destroy())
+        req.on("error", () => resolve(null))
+    })
 }
 
 function wakeOnLan(macs, host) {
@@ -245,7 +269,8 @@ function wakeOnLan(macs, host) {
     })
 }
 
-// Finds Philips TVs on the network by their UPnP announcement.
+// Finds Philips TVs on the network by their UPnP announcement. A TV whose control
+// API isn't answering is still listed, after the rest, using its Cast name.
 function discover(timeout = 3000) {
     return new Promise(resolve => {
         const hosts = new Set()
@@ -273,14 +298,15 @@ function discover(timeout = 3000) {
             const found = await Promise.all(Array.from(hosts).map(async host => {
                 try {
                     const system = await new PhilipsTV(host).request("GET", "/system", undefined, { auth: false, timeout: 3000 })
-                    return (system?.api_version ? { host, name: system.name } : null)
+                    return (system?.api_version ? { host, name: system.name, apiAvailable: true } : null)
                 } catch (e) {
-                    return null
+                    const name = await getCastName(host)
+                    return (name ? { host, name, apiAvailable: false } : null)
                 }
             }))
-            resolve(found.filter(tv => tv))
+            resolve(found.filter(tv => tv).sort((a, b) => b.apiAvailable - a.apiAvailable))
         }, timeout)
     })
 }
 
-module.exports = { PhilipsTV, TVError, wakeOnLan, discover }
+module.exports = { PhilipsTV, TVError, wakeOnLan, discover, getCastName }
