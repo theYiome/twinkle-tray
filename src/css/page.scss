@@ -460,44 +460,6 @@ select {
     }
 }
 
-.changelog {
-    white-space: pre-wrap;
-    padding: 10px 20px 20px;
-    margin: 20px 0 5px;
-    border-top: 1px solid var(--page-text-mid);
-    border-bottom: 1px solid var(--page-text-mid);
-    line-height: 0;
-
-    p,
-    h1,
-    h2,
-    h3,
-    h4,
-    h5,
-    ul,
-    ol {
-        line-height: 1.4;
-    }
-}
-
-.progress-bar {
-    position: relative;
-    width: 100%;
-    height: 5px;
-    max-width: 320px;
-    background: var(--window-border);
-
-    &>div {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 0%;
-        height: 100%;
-        background: var(--system-accent-color);
-    }
-}
-
-
 .icons-row {
     display: flex;
     margin: 3px -5px;
@@ -1118,9 +1080,6 @@ body[data-is-win11="true"] {
         #mica img {
             opacity: 0;
         }
-    }
-    .changelog {
-        border-color: #8181818c;
     }
 }
 

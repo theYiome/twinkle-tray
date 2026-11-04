@@ -839,7 +839,10 @@ getAllMonitors = async (ddcciMethod = "default", coreOnly = false) => {
                 : featureScanTimedOut
                     ? (canUseHighLevelBrightness ? 0x10 : false)
                     : (ddcciSupported || ddcBrightnessVCPs?.[hwid?.[1]]
-                        ? await determineBrightnessVCPCode(id)
+                        // Probing can come up empty on a display that's slow to answer
+                        // or has a broken capability report, even though the high-level
+                        // API works. Don't lose the display from the panel over that.
+                        ? ((await determineBrightnessVCPCode(id)) || (canUseHighLevelBrightness ? 0x10 : false))
                         // DDC/CI validation already failed for this display (e.g. an
                         // internal panel), so probing brightness VCPs only produces
                         // device errors. Fall back to the high-level placeholder.

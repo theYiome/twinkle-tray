@@ -8,9 +8,8 @@ const { Worker } = require("worker_threads")
 const { PhilipsTV, wakeOnLan, discover } = require("./PhilipsTV")
 
 const POLL_MS = 4000
-// Volume and Ambilight cost several HTTPS connections per read, since the TV closes
-// each one and every request needs a digest challenge first. Only an open panel
-// needs them to be current.
+// Volume and Ambilight cost an HTTPS connection each per read, since the TV closes
+// every one. Only an open panel needs them to be current.
 const STATE_READ_MS = 45000
 const WATCHED_READ_MS = 8000
 // A TV takes a while to come up after being woken, and looks like it's in

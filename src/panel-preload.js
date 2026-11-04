@@ -180,15 +180,6 @@ function displayControl(command, args) {
     return ipc.invoke('display-control', { command, args })
 }
 
-function installUpdate() {
-    ipc.send('get-update', window.latestVersion)
-    ipc.send('clear-update', window.latestVersion.version)
-}
-
-function dismissUpdate() {
-    ipc.send('ignore-update', window.latestVersion.version)
-}
-
 // Tray icon clicked
 ipc.on('tray-clicked', () => {
     window.document.getElementById("root").dataset["sleep"] = false
@@ -287,23 +278,6 @@ ipc.on('settings-updated', (event, settings) => {
 ipc.on('localization-updated', (event, localization) => {
     window.dispatchEvent(new CustomEvent('localizationUpdated', {
         detail: localization
-    }))
-})
-
-// New app update recieved
-ipc.on('latest-version', (event, version) => {
-    window.latestVersion = version
-    window.dispatchEvent(new CustomEvent('updateUpdated', {
-        detail: version
-    }))
-})
-
-// Update download progress
-ipc.on('updateProgress', (event, progress) => {
-    window.dispatchEvent(new CustomEvent('updateProgress', {
-        detail: {
-            progress
-        }
     }))
 })
 
@@ -447,8 +421,6 @@ window.openSettings = openSettings
 window.sendSettings = sendSettings
 window.requestSettings = requestSettings
 window.pauseMonitorUpdates = pauseMonitorUpdates
-window.installUpdate = installUpdate
-window.dismissUpdate = dismissUpdate
 window.sendHeight = sendHeight
 window.panelAnimationDone = panelAnimationDone
 window.setPanelVisibility = setPanelVisibility

@@ -12,7 +12,6 @@ import React, { PureComponent } from "react";
 import Titlebar from './Titlebar'
 import Slider from "./Slider";
 import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
-import Markdown from 'markdown-to-jsx';
 import TranslateReact from "../TranslateReact"
 import MonitorInfo from "./MonitorInfo"
 import MonitorFeatures from "./MonitorFeatures"
@@ -136,13 +135,10 @@ export default class SettingsWindow extends PureComponent {
             adjustmentTimes: [],
             linkedLevelsActive: false,
             updateInterval: (window.settings.updateInterval || 500),
-            downloadingUpdate: false,
-            checkForUpdates: false,
             adjustmentTimeIndividualDisplays: false,
             languages: [],
             useAcrylic: true,
             scrollShortcut: true,
-            updateProgress: 0,
             extendedDDCCI: {
                 contrast: 50,
                 volume: 50,
@@ -187,29 +183,6 @@ export default class SettingsWindow extends PureComponent {
         window.addEventListener("localizationUpdated", (e) => { this.setState({ languages: e.detail.languages });  T.setLocalizationData(e.detail.desired, e.detail.default)}); 
         window.addEventListener("windowHistory", e => this.setState({ windowHistory: e.detail }))
 
-        if (window.isAppX === false) {
-            window.addEventListener("updateUpdated", (e) => {
-                const version = e.detail
-                this.setState({
-                    releaseURL: (window.isAppX ? "ms-windows-store://pdp/?productid=9PLJWWSV01LK" : version.releaseURL),
-                    latest: version.version,
-                    downloadURL: version.downloadURL,
-                    changelog: version.changelog,
-                    error: (version.error != undefined ? version.error : false)
-                })
-                if (e.detail.error == true) {
-                    this.setState({
-                        downloadingUpdate: false
-                    })
-                }
-            })
-            window.addEventListener("updateProgress", (e) => {
-                this.setState({
-                    updateProgress: e.detail.progress
-                })
-            })
-            window.checkForUpdates()
-        }
         window.ipc.send('get-window-history')
         window.ipc.send("sendSettingsWindowPos")
         window.ipc.send('request-localization')
@@ -396,11 +369,6 @@ export default class SettingsWindow extends PureComponent {
                 icon: "&#xE957;"
             },
             {
-                id: "updates",
-                label: T.t("SETTINGS_SIDEBAR_UPDATES"),
-                icon: "&#xE895;"
-            },
-            {
                 id: "debug",
                 label: "Debug",
                 icon: "&#xEBE8;",
@@ -429,43 +397,6 @@ export default class SettingsWindow extends PureComponent {
         } catch(e) { }
     }
 
-
-    getUpdate = () => {
-        if (window.isAppX) {
-            return (
-                <p><a onClick={() => { window.openURL("ms-store") }}>{T.t("SETTINGS_UPDATES_MS_STORE")}</a></p>
-            )
-        } else {
-            if (this.state.latest && this.state.latest != window.version) {
-                return (
-                    <div>
-                        <p><b style={{ color: window.accent }}>{T.t("SETTINGS_UPDATES_AVAILABLE") + ` (${this.state.latest})`}</b></p>
-                        <div className="changelog">
-                            <h3>{this.state.latest}</h3>
-                            <Markdown options={{ forceBlock: true }}>{this.state.changelog}</Markdown>
-                        </div>
-                        <br />
-                        {this.getUpdateButton()}
-                    </div>
-                )
-            } else if (this.state.latest) {
-                return (
-                    <div>
-                        <p>{T.t("SETTINGS_UPDATES_NONE_AVAILABLE")}</p>
-                        <div className="changelog"><Markdown options={{ forceBlock: true }}>{this.state.changelog}</Markdown></div>
-                    </div>
-                )
-            }
-        }
-    }
-
-    getUpdateButton = () => {
-        if (this.state.downloadingUpdate) {
-            return (<div><p><b>{T.t("SETTINGS_UPDATES_DOWNLOADING")}</b></p><div className="progress-bar"><div style={{ width: `${this.state.updateProgress}%` }}></div></div></div>)
-        } else {
-            return (<a className="button" onClick={() => { window.getUpdate(); this.setState({ downloadingUpdate: true }) }}><span className="icon red vfix" style={{ paddingRight: "6px", display: (this.state.error ? "inline" : "none") }}>&#xE783;</span>{T.t("SETTINGS_UPDATES_DOWNLOAD", this.state.latest)}</a>)
-        }
-    }
 
     getMinMaxMonitors = () => {
         if (this.state.monitors == undefined || Object.keys(this.state.monitors).length == 0) {
@@ -1250,7 +1181,6 @@ export default class SettingsWindow extends PureComponent {
         const killWhenIdle = (settings.killWhenIdle || false)
         const order = (settings.order || [])
         const checkTimeAtStartup = (settings.checkTimeAtStartup || false)
-        const checkForUpdates = (settings.checkForUpdates || false)
         const adjustmentTimeIndividualDisplays = (settings.adjustmentTimeIndividualDisplays || false)
         const language = (settings.language || "system")
         const hotkeys = (settings.hotkeys || [])
@@ -1269,7 +1199,6 @@ export default class SettingsWindow extends PureComponent {
             killWhenIdle,
             order,
             checkTimeAtStartup,
-            checkForUpdates,
             adjustmentTimeIndividualDisplays,
             language,
             hotkeys,
@@ -1408,6 +1337,8 @@ export default class SettingsWindow extends PureComponent {
                                             </div>
                                         </div>
                                     )} />
+
+                                    <SettingsOption title={T.t("SETTINGS_GENERAL_VERSION")} input={<span>{window.version ? `${window.version}${window.versionTag && window.versionBuild ? ` (${window.versionBuild})` : ""}` : ""}</span>} />
 
                                 </div>
 
@@ -1702,23 +1633,6 @@ export default class SettingsWindow extends PureComponent {
 
                             <SettingsPage current={this.state.activePage} id="light-sensor">
                                 <LightSensorSettings T={T} renderToggle={this.renderToggle.bind(this)} monitors={this.state.monitors}></LightSensorSettings>
-                            </SettingsPage>
-
-                            <SettingsPage current={this.state.activePage} id="updates">
-                                <div className="pageSection">
-                                    <div className="sectionTitle">{T.t("SETTINGS_UPDATES_TITLE")}</div>
-                                    <p>{T.h("SETTINGS_UPDATES_VERSION", '<b>' + (window.version ? `${window.version}${window.versionTag && window.versionBuild ? ` (${window.versionBuild})` : ""}` : "not available") + '</b>')}</p>
-                                    {this.getUpdate()}
-                                </div>
-                                <div className="pageSection" style={{ display: (window.isAppX ? "none" : (this.isSection("updates") ? "block" : "none")) }}>
-                                    <SettingsOption title={T.t("SETTINGS_UPDATES_AUTOMATIC_TITLE")} description={T.t("SETTINGS_UPDATES_AUTOMATIC_DESC")} input={this.renderToggle("checkForUpdates")} />
-                                    <SettingsOption title={T.t("SETTINGS_UPDATES_CHANNEL")} input={
-                                        <select value={this.state.rawSettings.branch} onChange={(e) => { window.sendSettings({ branch: e.target.value }) }}>
-                                            <option value="master">{T.t("SETTINGS_UPDATES_BRANCH_STABLE")}</option>
-                                            <option value="beta">{T.t("SETTINGS_UPDATES_BRANCH_BETA")}</option>
-                                        </select>
-                                    } />
-                                </div>
                             </SettingsPage>
 
                             <SettingsPage current={this.state.activePage} id="debug">

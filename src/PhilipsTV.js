@@ -20,6 +20,9 @@ const API_PORT = 1926
 const CAST_PORT = 8009
 const CAST_INFO_PORT = 8008
 const REQUEST_TIMEOUT = 8000
+// The TV's API server is reported to lock up under bursts of requests, until it's
+// unplugged. It closes every connection, so spacing requests out is what's left.
+const MIN_REQUEST_GAP_MS = 700
 
 // Philips' app secret for signing pairing grants. It's the same for every client.
 const PAIRING_KEY = Buffer.from("ZmVay1EQVFOaZhwQ4Kv81ypLAZNczV9sG4KkseXWn1NEk6cXmPKO/MCa9sryslvLCFMnNe4Z4CPXzToowvhHvA==", "base64")
@@ -63,15 +66,34 @@ function rawRequest(host, method, path, body, headers = {}, timeout = REQUEST_TI
     })
 }
 
-function digestHeader(method, path, username, password, challenge) {
+// Everything sent to a TV goes through here, one call at a time
+const requestQueues = new Map()
+function runInTurn(host, call) {
+    if (!requestQueues.has(host)) requestQueues.set(host, { last: Promise.resolve(), doneAt: 0 })
+    const queue = requestQueues.get(host)
+    const turn = queue.last.then(async () => {
+        const wait = queue.doneAt + MIN_REQUEST_GAP_MS - Date.now()
+        if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
+        try {
+            return await call()
+        } finally {
+            queue.doneAt = Date.now()
+        }
+    })
+    queue.last = turn.catch(() => { })
+    return turn
+}
+
+function digestHeader(method, path, username, password, challenge, count = 1) {
     const fields = {}
     for (const [, key, quoted, plain] of challenge.matchAll(/(\w+)=(?:"([^"]*)"|([^,\s]+))/g)) {
         fields[key] = quoted ?? plain
     }
     const qop = (fields.qop || "auth").split(",")[0].trim()
     const cnonce = crypto.randomBytes(8).toString("hex")
-    const response = md5(`${md5(`${username}:${fields.realm}:${password}`)}:${fields.nonce}:00000001:${cnonce}:${qop}:${md5(`${method}:${path}`)}`)
-    return `Digest username="${username}", realm="${fields.realm}", nonce="${fields.nonce}", uri="${path}", response="${response}", algorithm=MD5, qop=${qop}, nc=00000001, cnonce="${cnonce}"`
+    const nc = count.toString(16).padStart(8, "0")
+    const response = md5(`${md5(`${username}:${fields.realm}:${password}`)}:${fields.nonce}:${nc}:${cnonce}:${qop}:${md5(`${method}:${path}`)}`)
+    return `Digest username="${username}", realm="${fields.realm}", nonce="${fields.nonce}", uri="${path}", response="${response}", algorithm=MD5, qop=${qop}, nc=${nc}, cnonce="${cnonce}"`
         + (fields.opaque ? `, opaque="${fields.opaque}"` : "")
 }
 
@@ -115,13 +137,24 @@ class PhilipsTV {
         this.host = host
         this.deviceId = credentials.deviceId
         this.authKey = credentials.authKey
+        this.digest = null
     }
 
-    async request(method, endpoint, body, { auth = true, timeout, deviceId = this.deviceId, authKey = this.authKey } = {}) {
+    request(method, endpoint, body, options) {
+        return runInTurn(this.host, () => this.send(method, endpoint, body, options))
+    }
+
+    async send(method, endpoint, body, { auth = true, timeout, deviceId = this.deviceId, authKey = this.authKey } = {}) {
         const path = `/6${endpoint}`
-        let response = await rawRequest(this.host, method, path, body, {}, timeout)
+        const signed = auth && deviceId
+        // Asking for a new challenge costs an extra connection, so the last one is used
+        // for as long as the TV takes it. If it doesn't, its refusal comes with a new one.
+        const known = (signed && this.digest?.deviceId === deviceId ? this.digest : null)
+        if (known) known.count++
+        let response = await rawRequest(this.host, method, path, body, known ? { Authorization: digestHeader(method, path, deviceId, authKey, known.challenge, known.count) } : {}, timeout)
         const challenge = response.headers["www-authenticate"]
-        if (response.status === 401 && auth && deviceId && challenge?.includes("Digest")) {
+        if (response.status === 401 && signed && challenge?.includes("Digest")) {
+            this.digest = { deviceId, challenge, count: 1 }
             response = await rawRequest(this.host, method, path, body, { Authorization: digestHeader(method, path, deviceId, authKey, challenge) }, timeout)
         }
         if (response.status !== 200) {

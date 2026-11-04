@@ -150,75 +150,6 @@ body[data-use-native-animation="false"] {
 }
 
 
-//
-// Update bar
-//
-
-.updateBar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: var(--system-accent-color);
-    color: white;
-    padding: 15px;
-    width: 100%;
-    margin: 0px -15px 0px;
-    line-height: 1;
-
-    .left {
-        font-size: 13px;
-        opacity: 0.8;
-
-        &.progress {
-            padding-right: 15px;
-            width: 100%;
-        }
-    }
-
-    .right {
-        display: flex;
-        font-size: 13px;
-        align-items: center;
-
-        a {
-            cursor: pointer;
-            padding: 1px 5px;
-            margin: 0px 0;
-            font-weight: 500;
-            opacity: 1;
-
-            &:hover {
-                opacity: 0.8;
-            }
-
-            &+a {
-                margin-left: 6px;
-            }
-        }
-
-        .icon {
-            margin-bottom: -1px;
-        }
-    }
-}
-
-.progress-bar {
-    position: relative;
-    width: 100%;
-    height: 5px;
-    max-width: 320px;
-    background: rgba(white, 0.2);
-
-    &>div {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 0%;
-        height: 100%;
-        background: white;
-    }
-}
-
 .icon {
     font-family: "Segoe MDL2 Assets";
     &.icon-text {
@@ -344,7 +275,7 @@ body[data-is-win11="false"] #root {
             white-space: nowrap;
         }
 
-        .updateBar, .feature-power-icon, .feature-icon, .feature-row + .feature-row, .monitor-sliders.extended + .monitor-sliders.extended:before {
+        .feature-power-icon, .feature-icon, .feature-row + .feature-row, .monitor-sliders.extended + .monitor-sliders.extended:before {
             display: none;
         }
 
@@ -779,7 +710,7 @@ body[data-is-win11="true"] {
             }
         }
 
-        .titlebar, .updateBar {
+        .titlebar {
             display: none;
         }
 
