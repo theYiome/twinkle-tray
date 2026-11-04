@@ -15,6 +15,7 @@ const http = require("http")
 const https = require("https")
 const net = require("net")
 const os = require("os")
+const { TitanMqttClient, KEY_CODES, PAIRING_LINGER_MS } = require("./TitanMqtt")
 
 const API_PORT = 1926
 const CAST_PORT = 8009
@@ -34,7 +35,29 @@ const REMOTE_KEYS = {
     right: "CursorRight",
     ok: "Confirm",
     back: "Back",
-    home: "Home"
+    home: "Home",
+    volumeUp: "VolumeUp",
+    volumeDown: "VolumeDown"
+}
+
+// Pressing these twice undoes them, so they're never sent again if the first may have landed
+const TOGGLE_KEYS = new Set(["Standby", "Mute"])
+
+// Whether a key sent over the API could have reached the TV despite this error. An answer
+// of any kind means it was refused, but one that never came says nothing.
+function couldHaveLanded(error) {
+    if (typeof error?.status === "number" || typeof error?.code === "number") return false
+    return !["ECONNREFUSED", "connectTimeout", "certificate"].includes(error?.code)
+}
+
+function canResendKey(key, error) {
+    return !TOGGLE_KEYS.has(key) || !couldHaveLanded(error)
+}
+
+// Records what's sent to the TV, for working out what happened around an outage later
+let diagnostics = () => { }
+function setTVDiagnostics(write) {
+    diagnostics = write
 }
 
 // Each of these was set on a 48OLED770 and read back. The names are the TV's own.
@@ -74,6 +97,8 @@ class TVError extends Error {
 function rawRequest(host, method, path, body, headers = {}, timeout = REQUEST_TIMEOUT) {
     return new Promise((resolve, reject) => {
         const data = (body === undefined ? undefined : JSON.stringify(body))
+        const startedAt = Date.now()
+        const signed = !!headers.Authorization
         const req = https.request({
             host,
             port: API_PORT,
@@ -89,10 +114,16 @@ function rawRequest(host, method, path, body, headers = {}, timeout = REQUEST_TI
             let text = ""
             res.setEncoding("utf8")
             res.on("data", chunk => text += chunk)
-            res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }))
+            res.on("end", () => {
+                diagnostics("api", { method, path, status: res.statusCode, ms: Date.now() - startedAt, signed })
+                resolve({ status: res.statusCode, headers: res.headers, text })
+            })
         })
         req.on("timeout", () => req.destroy(new TVError(`${method} ${path} timed out`)))
-        req.on("error", reject)
+        req.on("error", e => {
+            diagnostics("api", { method, path, error: e.code ?? e.message, ms: Date.now() - startedAt, signed })
+            reject(e)
+        })
         req.end(data)
     })
 }
@@ -169,6 +200,76 @@ class PhilipsTV {
         this.deviceId = credentials.deviceId
         this.authKey = credentials.authKey
         this.digest = null
+        this.backup = null
+        this.backupPairing = null
+        this.backupOptions = credentials.backupOptions ?? {}
+        this.setBackupCredentials(credentials.backup)
+    }
+
+    get hasBackup() {
+        return !!this.backup
+    }
+
+    setBackupCredentials(credentials) {
+        this.closeBackup()
+        this.backupCredentials = credentials ?? null
+        this.backup = (credentials ? this.backupClient(credentials) : null)
+    }
+
+    backupClient(credentials, options = {}) {
+        return new TitanMqttClient({ getHost: () => this.host, credentials, log: diagnostics, ...this.backupOptions, ...options })
+    }
+
+    closeBackup() {
+        this.backup?.close()
+        this.backupPairing?.close()
+        this.backupPairing = null
+    }
+
+    // Makes the TV show a PIN, and resolves with how many seconds it stays valid
+    async startBackupPairing() {
+        this.backupPairing?.close()
+        this.backupPairing = this.backupClient(null, { lingerMs: PAIRING_LINGER_MS })
+        return (await this.backupPairing.startPairing()).timeout
+    }
+
+    // A wrong PIN can be tried again for as long as the TV allows
+    async finishBackupPairing(pin) {
+        if (!this.backupPairing) throw new TVError("Pairing wasn't started.")
+        const credentials = await this.backupPairing.finishPairing(pin)
+        this.backupPairing.close()
+        this.backupPairing = null
+        this.setBackupCredentials(credentials)
+        return credentials
+    }
+
+    // Moves the focus up on the TV if something's on screen that has one, as a visible test
+    async testBackup() {
+        const startedAt = Date.now()
+        await this.backup.sendKeyCode(KEY_CODES.CursorUp)
+        const ms = Date.now() - startedAt
+        const info = await this.backup.readInfo().catch(e => ({ infoError: e.message }))
+        diagnostics("mqtt.tested", { ms, ...info })
+        return { ms }
+    }
+
+    // What everything answers right now, for the log. It sends nothing the TV acts on.
+    async diagnosticsSnapshot({ apiDown = false, includeBackup = false } = {}) {
+        const snapshot = { cast: await this.isOn(), apiPort: await this.isReachable(), uptime: await getCastUptime(this.host) }
+        if (apiDown) {
+            snapshot.system = await this.getSystem().then(() => 200, e => e.status ?? (e.code ?? e.message))
+        }
+        if (includeBackup) {
+            const client = this.backup ?? this.backupClient(null)
+            try {
+                snapshot.mqtt = { ok: true, paired: !!this.backup, ...(await client.checkHealth()) }
+            } catch (e) {
+                snapshot.mqtt = { ok: false, paired: !!this.backup, error: e.message }
+            } finally {
+                if (!this.backup) client.close()
+            }
+        }
+        return snapshot
     }
 
     request(method, endpoint, body, options) {
@@ -249,18 +350,67 @@ class PhilipsTV {
         return this.request("POST", "/audio/volume", { muted, current })
     }
 
-    sendKey(key) {
+    sendKeyOverApi(key) {
         return this.request("POST", "/input/key", { key })
     }
 
-    pressButton(button) {
+    // Goes over the backup if there is one and the API is known to be down, or has just
+    // refused it. Resolves with which way it went.
+    async sendKey(key, options) {
+        try {
+            return await this.routeKey(key, options)
+        } catch (e) {
+            // The TV may be doing what it was asked, so callers shouldn't assume otherwise
+            if (TOGGLE_KEYS.has(key) && couldHaveLanded(e)) e.mayHaveLanded = true
+            throw e
+        }
+    }
+
+    async routeKey(key, { apiDown = false } = {}) {
+        const code = (Object.hasOwn(KEY_CODES, key) ? KEY_CODES[key] : undefined)
+        if (!this.backup || code === undefined) {
+            await this.sendKeyOverApi(key)
+            return { via: "api" }
+        }
+
+        if (apiDown) {
+            try {
+                await this.backup.sendKeyCode(code)
+                diagnostics("key", { key, via: "backup", reason: "api down" })
+                return { via: "backup" }
+            } catch (e) {
+                // A key that only got as far as being unconfirmed may have landed
+                diagnostics("key.backupFailed", { key, error: e.message, code: e.code })
+                if (!canResendKey(key, e)) throw e
+            }
+            await this.sendKeyOverApi(key)
+            return { via: "api" }
+        }
+
+        try {
+            await this.sendKeyOverApi(key)
+            return { via: "api" }
+        } catch (apiError) {
+            if (!canResendKey(key, apiError)) throw apiError
+            try {
+                await this.backup.sendKeyCode(code)
+            } catch (e) {
+                diagnostics("key.backupFailed", { key, error: e.message })
+                throw apiError
+            }
+            diagnostics("key", { key, via: "backup", reason: apiError.message })
+            return { via: "backup", apiError }
+        }
+    }
+
+    pressButton(button, options) {
         if (!Object.hasOwn(REMOTE_KEYS, button)) throw new TVError(`There's no "${button}" button.`, "unsupported")
-        return this.sendKey(REMOTE_KEYS[button])
+        return this.sendKey(REMOTE_KEYS[button], options)
     }
 
     // Only call this on a TV that's on, since the key is a toggle that could wake one
-    standby() {
-        return this.sendKey("Standby")
+    standby(options) {
+        return this.sendKey("Standby", options)
     }
 
     // HDMI, as opposed to the TV's own apps and home screen. It doesn't say which input.
@@ -355,6 +505,27 @@ function wakeOnLan(macs, host) {
     })
 }
 
+// How long the TV has been running, which shows a real restart. Null if it isn't answering.
+function getCastUptime(host, timeout = 3000) {
+    return new Promise(resolve => {
+        const req = http.get({ host, port: CAST_INFO_PORT, path: "/setup/eureka_info?params=uptime", timeout }, res => {
+            let text = ""
+            res.setEncoding("utf8")
+            res.on("data", chunk => text += chunk)
+            res.on("end", () => {
+                try {
+                    resolve(JSON.parse(text).uptime ?? null)
+                } catch (e) {
+                    resolve(null)
+                }
+            })
+        })
+        req.on("timeout", () => req.destroy())
+        req.on("error", () => resolve(null))
+        req.on("close", () => resolve(null))
+    })
+}
+
 // Finds Philips TVs on the network by their UPnP announcement. A TV whose control
 // API isn't answering is still listed, after the rest, using its Cast name.
 function discover(timeout = 3000) {
@@ -395,4 +566,4 @@ function discover(timeout = 3000) {
     })
 }
 
-module.exports = { PhilipsTV, TVError, wakeOnLan, discover, getCastName, AMBILIGHT_STYLES, ambilightStyleId }
+module.exports = { PhilipsTV, TVError, wakeOnLan, discover, getCastName, AMBILIGHT_STYLES, ambilightStyleId, setTVDiagnostics, canResendKey }

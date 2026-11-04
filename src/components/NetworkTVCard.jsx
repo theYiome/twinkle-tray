@@ -30,7 +30,9 @@ const REMOTE_BUTTONS = [
     { button: "left", icon: "&#xE76B;", label: "PANEL_TV_REMOTE_LEFT" },
     { button: "ok", icon: "&#xE73E;", label: "PANEL_TV_REMOTE_OK" },
     { button: "right", icon: "&#xE76C;", label: "PANEL_TV_REMOTE_RIGHT" },
-    { button: "down", icon: "&#xE70D;", label: "PANEL_TV_REMOTE_DOWN" }
+    { button: "volumeDown", icon: "&#xE738;", label: "PANEL_TV_REMOTE_VOLUME_DOWN" },
+    { button: "down", icon: "&#xE70D;", label: "PANEL_TV_REMOTE_DOWN" },
+    { button: "volumeUp", icon: "&#xE710;", label: "PANEL_TV_REMOTE_VOLUME_UP" }
 ]
 
 const AMBILIGHT_GROUPS = [
@@ -68,6 +70,10 @@ export default function NetworkTVCard({ T }) {
     const controlsUnavailable = tv.api === "down" || tv.api === "unauthorized"
     const unavailableReason = (controlsUnavailable ? T.t("PANEL_TV_UNAVAILABLE") : false)
     const offReason = (isOn ? unavailableReason : T.t("PANEL_TV_STATUS_STANDBY"))
+    // Keys can still go over the backup link, but reading and setting things can't
+    const usingBackup = (controlsUnavailable && tv.backupPaired)
+    const keysReason = (usingBackup ? false : unavailableReason)
+    const keysOffReason = (isOn ? keysReason : T.t("PANEL_TV_STATUS_STANDBY"))
     const failedAt = tv.standbyFailure && new Date(tv.standbyFailure.at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })
     const statusText = {
         on: T.t("PANEL_TV_STATUS_ON"),
@@ -90,18 +96,18 @@ export default function NetworkTVCard({ T }) {
                 <IconButton
                     icon="&#xE7E8;"
                     label={isOn ? T.t("PANEL_LABEL_TURN_OFF") : T.t("PANEL_LABEL_TURN_ON")}
-                    active={isOn && !controlsUnavailable}
-                    disabledReason={isOn ? unavailableReason : !tv.canWake}
+                    active={isOn && !keysReason}
+                    disabledReason={isOn ? keysReason : !tv.canWake}
                     onClick={() => run("tv.togglePower")} />
                 {display ? <IconButton icon="&#xE7F4;" label={display.active ? T.t("PANEL_TV_DISCONNECT") : T.t("PANEL_TV_CONNECT")} active={display.active} onClick={() => run("display.setActive", { key: display.key, active: !display.active })} /> : null}
                 {display?.mirroredWith?.length ? <IconButton icon="&#xE9A6;" label={T.t("PANEL_TV_EXTEND")} onClick={() => run("display.setActive", { key: display.key, active: true, extend: true })} /> : null}
                 {display?.active && !display.mirroredWith?.length ? <IconButton icon="&#xE8A7;" label={T.t("PANEL_TV_MOVE_WINDOWS")} onClick={() => run("display.moveWindows", { key: display.key })} /> : null}
                 {display?.active && display.hdr !== "unsupported" ? <IconButton icon="&#xE790;" label={T.t("PANEL_TV_HDR")} active={display.hdr === "on"} onClick={() => run("display.setHDR", { key: display.key, on: display.hdr !== "on" })} /> : null}
-                <IconButton icon={tv.muted ? "&#xE74F;" : "&#xE767;"} label={T.t("PANEL_TV_MUTE")} active={!!tv.muted} disabledReason={offReason} onClick={() => run("tv.toggleMute")} />
+                <IconButton icon={tv.muted ? "&#xE74F;" : "&#xE767;"} label={T.t("PANEL_TV_MUTE")} active={!!tv.muted} disabledReason={keysOffReason} onClick={() => run("tv.toggleMute")} />
                 <IconButton icon="&#xE793;" label={T.t("PANEL_TV_AMBILIGHT")} active={!!tv.ambilight} disabledReason={offReason} onClick={() => run("tv.ambilight", { on: !tv.ambilight })} />
-                <IconButton icon="&#xE7C2;" label={T.t("PANEL_TV_REMOTE")} active={showRemote && !offReason} disabledReason={offReason} onClick={() => setShowRemote(!showRemote)} />
+                <IconButton icon="&#xE7C2;" label={T.t("PANEL_TV_REMOTE")} active={showRemote && !keysOffReason} disabledReason={keysOffReason} onClick={() => setShowRemote(!showRemote)} />
             </div>
-            {showRemote && !offReason ? (
+            {showRemote && !keysOffReason ? (
                 <div className="tv-remote" role="group" aria-label={T.t("PANEL_TV_REMOTE")}>
                     {REMOTE_BUTTONS.map(({ button, icon, label }) => <div key={button} className={`tv-remote-${button}`}><IconButton icon={icon} label={T.t(label)} onClick={() => run("tv.remote", { button })} /></div>)}
                 </div>
@@ -134,7 +140,7 @@ export default function NetworkTVCard({ T }) {
             {display?.mirroredWith?.length ? <PanelStatus text={T.t("SETTINGS_DISPLAYS_MIRRORED", display.mirroredWith.join(", "))} details={T.t("PANEL_TV_MIRROR_NOTE", display.mirroredWith.join(", "))} /> : null}
             {tv.autoDisconnect && tv.disconnectedAutomatically ? <PanelStatus text={T.t("PANEL_TV_AUTO_SHORT")} details={T.t("PANEL_TV_AUTO_NOTE")} /> : null}
             {tv.api === "unauthorized" ? <PanelStatus severity="warning" text={T.t("PANEL_TV_UNAUTHORIZED_SHORT")} details={T.t("PANEL_TV_UNAUTHORIZED")} /> : null}
-            {isOn && tv.api === "down" ? <PanelStatus severity="warning" text={T.t("PANEL_TV_UNAVAILABLE")} details={T.t("PANEL_TV_API_DOWN")} /> : null}
+            {isOn && tv.api === "down" ? <PanelStatus severity="warning" text={tv.backupPaired ? T.t("PANEL_TV_USING_BACKUP") : T.t("PANEL_TV_UNAVAILABLE")} details={tv.backupPaired ? T.t("PANEL_TV_USING_BACKUP_NOTE") : T.t("PANEL_TV_API_DOWN")} /> : null}
             {tv.standbyFailure ? (
                 <PanelStatus
                     severity="error"

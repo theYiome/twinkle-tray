@@ -451,11 +451,11 @@ $card-gap: 8px;
     .tv-remote {
         display: grid;
         grid-template-columns: repeat(3, $card-control-size);
-        grid-template-areas: "back up home" "left ok right" ". down .";
+        grid-template-areas: "back up home" "left ok right" "volumeDown down volumeUp";
         gap: $card-gap;
         margin: $card-gap 0 0 $card-icon-column;
 
-        @each $button in back, up, home, left, ok, right, down {
+        @each $button in back, up, home, left, ok, right, down, volumeDown, volumeUp {
             .tv-remote-#{$button} {
                 grid-area: $button;
             }

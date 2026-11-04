@@ -81,6 +81,8 @@ const { VerticalRefreshRateContext, addDisplayChangeListener } = require("win32-
 const refreshCtx = new VerticalRefreshRateContext();
 const w32disp = require("win32-displayconfig");
 const { NetworkTV } = require("./NetworkTV");
+const { setTVDiagnostics } = require("./PhilipsTV");
+const { TVDiagnostics } = require("./TVDiagnostics");
 const { DisplayOverlays } = require("./DisplayOverlays");
 const { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, convertSliderLevel, combineDimLevels } = require("./DimRange");
 const { DisplayModeChanges } = require("./DisplayModes");
@@ -3837,7 +3839,15 @@ function getLocalAPIToken() {
   return newToken
 }
 
+const tvDiagnosticsPath = path.join(configFilesDir, `tv-diagnostics${(isDev ? "-dev" : "")}`)
+const tvDiagnostics = new TVDiagnostics(tvDiagnosticsPath)
+const noteTV = (event, fields) => tvDiagnostics.write(event, fields)
+setTVDiagnostics(noteTV)
+noteTV("app.started", { version: appVersion })
+
 const networkTV = new NetworkTV({
+  note: noteTV,
+  diagnosticsPath: tvDiagnosticsPath,
   getConfig: () => settings.networkTV,
   setConfig: (changes, { saveNow = false } = {}) => {
     writeSettings({ networkTV: Object.assign({}, settings.networkTV, changes) }, false)
@@ -4078,6 +4088,13 @@ const displayControlCommands = {
   "tv.ambilight": ({ on }) => networkTV.setAmbilight(!!on),
   "tv.ambilightStyle": ({ id }) => networkTV.setAmbilightStyle(id),
   "tv.remote": ({ button }) => networkTV.pressButton(button),
+  "tv.backupPairStart": () => networkTV.startBackupPairing(),
+  "tv.backupPairFinish": ({ pin }) => networkTV.finishBackupPairing(pin),
+  "tv.backupTest": () => networkTV.testBackup(),
+  "tv.backupRemove": () => networkTV.removeBackup(),
+  "tv.openDiagnostics": () => {
+    require("electron").shell.showItemInFolder(`${tvDiagnosticsPath}.log`)
+  },
   "tv.dismissStandbyFailure": () => networkTV.clearStandbyFailure(),
   "tv.key": ({ key }) => sendTVKey(key),
   "display.setActive": ({ key, active, extend }) => setDisplayActive(key, !!active, !!extend),

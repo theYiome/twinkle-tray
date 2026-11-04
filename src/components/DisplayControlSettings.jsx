@@ -72,6 +72,55 @@ function TVPairing({ T, tv }) {
     )
 }
 
+function BackupLink({ T, tv }) {
+    const [secondsLeft, setSecondsLeft] = useState(0)
+    const [pin, setPin] = useState("")
+    const [note, setNote] = useState(false)
+    const [busy, setBusy] = useState(false)
+
+    useEffect(() => {
+        if (secondsLeft <= 0) return
+        const timeout = setTimeout(() => {
+            if (secondsLeft === 1) setNote(T.t("SETTINGS_TV_PIN_EXPIRED"))
+            setSecondsLeft(secondsLeft - 1)
+        }, 1000)
+        return () => clearTimeout(timeout)
+    }, [secondsLeft])
+
+    const validPin = /^\d{4}$/.test(pin.trim())
+
+    const run = async (command, args, onDone) => {
+        setBusy(true)
+        setNote(false)
+        const response = await send(command, args)
+        setBusy(false)
+        if (!response.ok) return setNote(response.error)
+        onDone?.(response.result)
+    }
+    const button = (label, onClick) => <a className="button" aria-disabled={busy} onClick={busy ? undefined : onClick}>{label}</a>
+
+    const status = (secondsLeft > 0 ? T.t("SETTINGS_TV_BACKUP_PIN_LEFT", secondsLeft) : (tv.backupPaired ? T.t("SETTINGS_TV_BACKUP_ON") : T.t("SETTINGS_TV_BACKUP_DESC")))
+    const description = (note ? (secondsLeft > 0 ? `${note} ${status}` : note) : status)
+
+    return (
+        <SettingsOption title={T.t("SETTINGS_TV_BACKUP_TITLE")} description={description} tooltip={T.t("SETTINGS_TV_BACKUP_TIP")} input={(
+            secondsLeft > 0 ? (
+                <>
+                    <input type="text" inputMode="numeric" maxLength={4} size={5} aria-label={T.t("SETTINGS_TV_BACKUP_PIN")} placeholder={T.t("SETTINGS_TV_BACKUP_PIN")} value={pin} onChange={e => setPin(e.target.value)} />
+                    {" "}
+                    {validPin ? button(T.t("SETTINGS_TV_BACKUP_CONFIRM"), () => run("tv.backupPairFinish", { pin: pin.trim() }, () => { setSecondsLeft(0); setPin(""); setNote(T.t("SETTINGS_TV_BACKUP_PAIRED")) })) : null}
+                </>
+            ) : tv.backupPaired ? (
+                <>
+                    {button(T.t("SETTINGS_TV_BACKUP_TEST"), () => run("tv.backupTest", {}, result => setNote(T.t("SETTINGS_TV_BACKUP_SENT", result.ms))))}
+                    {" "}
+                    {button(T.t("SETTINGS_TV_BACKUP_REMOVE"), () => run("tv.backupRemove"))}
+                </>
+            ) : button(T.t("SETTINGS_TV_BACKUP_PAIR"), () => run("tv.backupPairStart", {}, seconds => setSecondsLeft(seconds)))
+        )} />
+    )
+}
+
 function PairedTV({ T, tv, displays }) {
     const toggle = (setting, checked) => (
         <div className="inputToggle-generic" data-textside="right">
@@ -100,6 +149,8 @@ function PairedTV({ T, tv, displays }) {
             )} />
             <SettingsOption title={T.t("SETTINGS_TV_SAVER_TITLE")} description={T.t("SETTINGS_TV_SAVER_DESC")} tooltip={T.t("SETTINGS_TV_SAVER_TIP")} input={toggle("keepScreenSaverAway", tv.keepScreenSaverAway)} />
             <SettingsOption title={T.t("SETTINGS_TV_AUTO_TITLE")} description={T.t("SETTINGS_TV_AUTO_DESC")} tooltip={T.t("SETTINGS_TV_AUTO_TIP")} input={toggle("autoDisconnect", tv.autoDisconnect)} />
+            <BackupLink T={T} tv={tv} />
+            <SettingsOption title={T.t("SETTINGS_TV_LOG_TITLE")} tooltip={T.t("SETTINGS_TV_LOG_TIP")} input={<a className="button" onClick={() => send("tv.openDiagnostics")}>{T.t("SETTINGS_TV_LOG_OPEN")}</a>} />
         </>
     )
 }

@@ -33,6 +33,8 @@ const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
 const SCREENS_OFF_DEFAULT_MINUTES = 5
 // After being told to go to standby, the TV still looks like it's on for a while
 const STANDBY_SETTLE_MS = 20000
+// How often the log gets a look at everything the TV is answering on
+const DIAGNOSTICS_EVERY_MS = 5 * 60 * 1000
 
 // Turns raw readings into a settled power state. Pure, so the rules that decide
 // when a display gets turned off can be tested without a TV.
@@ -120,8 +122,11 @@ function displayActionFor({ power, autoDisconnect, castSeen, displayActive, disc
 }
 
 class NetworkTV extends EventEmitter {
-    constructor({ getConfig, setConfig, loadCredentials, saveCredentials, displays }) {
+    constructor({ getConfig, setConfig, loadCredentials, saveCredentials, displays, note = () => { }, diagnosticsPath = null }) {
         super()
+        this.note = note
+        this.diagnosticsPath = diagnosticsPath
+        this.diagnosticsTimer = null
         this.screensOn = true
         this.screenSaverTimer = null
         this.screenSaverWakeTimers = []
@@ -192,6 +197,8 @@ class NetworkTV extends EventEmitter {
         this.pollTimer = null
         clearInterval(this.screenSaverTimer)
         this.screenSaverTimer = setInterval(() => this.sendScreenSaverKey(), SCREEN_SAVER_KEY_INTERVAL_MS)
+        clearInterval(this.diagnosticsTimer)
+        this.diagnosticsTimer = setInterval(() => this.logSnapshot("timer"), DIAGNOSTICS_EVERY_MS)
         if (this.isPaired) this.poll()
     }
 
@@ -205,6 +212,26 @@ class NetworkTV extends EventEmitter {
         this.screensOffTimer = null
         clearTimeout(this.wakeRetryTimer)
         this.wakeRetryTimer = null
+        clearInterval(this.diagnosticsTimer)
+        this.diagnosticsTimer = null
+        this.tv?.closeBackup?.()
+    }
+
+    // A connection is only opened on the backup link if it's paired or the API is in
+    // trouble, so the log can show whether it's still alive in a real outage.
+    async logSnapshot(reason) {
+        if (!this.isPaired) return
+        const apiDown = this.apiDown
+        try {
+            const snapshot = await this.tv.diagnosticsSnapshot?.({ apiDown, includeBackup: apiDown || !!this.tv.hasBackup })
+            if (snapshot) this.note("snapshot", { reason, power: this.tracker.state, api: this.health.state, screensOn: this.screensOn, ...snapshot })
+        } catch (e) {
+            this.note("snapshot.failed", { reason, error: e.message })
+        }
+    }
+
+    get apiDown() {
+        return this.health.state === "down" || this.health.state === "unauthorized"
     }
 
     // After the PC sleeps nothing is known about the TV, so don't act on old readings
@@ -238,6 +265,7 @@ class NetworkTV extends EventEmitter {
             keepScreenSaverAway: this.config.keepScreenSaverAway !== false,
             screensOffStandbyMinutes: this.screensOffMinutes,
             ambilightStyles: AMBILIGHT_STYLES.map(({ id, group, name }) => ({ id, group, name })),
+            backupPaired: !!this.tv?.hasBackup,
             disconnectedAutomatically: !!this.config.disconnectedAutomatically,
             canWake: !!this.config.wakeMacs?.length,
             standbyFailure: this.config.standbyFailure ?? null,
@@ -308,6 +336,7 @@ class NetworkTV extends EventEmitter {
         const returned = (on && !this.screensOn)
         const left = (!on && this.screensOn)
         this.screensOn = on
+        if (returned || left) this.note("screens", { on, power: this.tracker.state })
         if (returned) {
             this.sendScreenSaverWakeKeys()
         } else if (!on) {
@@ -345,19 +374,26 @@ class NetworkTV extends EventEmitter {
         } catch (e) {
             this.logOnChange("screensOff", `couldn't check what the TV is showing: ${e.message}`)
         }
+        this.note("screensOff.check", { showingPC })
         if (this.screensOn) return
         if (!showingPC || Date.now() < this.wakingUntil) return this.startScreensOffTimer()
         if (!(await this.tv.isOn()) || this.screensOn) return
 
         this.wakeAfterSleep = true
         try {
-            await this.apiCommand(tv => tv.standby())
+            await this.apiCommand((tv, options) => tv.standby(options))
             this.standbySentAt = Date.now()
             this.clearStandbyFailure()
             console.log("NetworkTV: TV sent to standby since the screens are off")
         } catch (e) {
-            this.wakeAfterSleep = false
             console.log("NetworkTV: couldn't send the TV to standby:", e.message)
+            this.note("screensOff.failed", { error: e.message, mayHaveLanded: !!e.mayHaveLanded })
+            // Sending it again could wake it, and it still has to come back with the screens
+            if (e.mayHaveLanded) {
+                this.standbySentAt = Date.now()
+                return
+            }
+            this.wakeAfterSleep = false
             this.startScreensOffTimer()
         }
     }
@@ -370,8 +406,7 @@ class NetworkTV extends EventEmitter {
             // It shouldn't get keys while it's still coming up
             && !this.wakeAfterSleep
             && Date.now() >= this.wakingUntil
-            && this.health.state !== "down"
-            && this.health.state !== "unauthorized"
+            && (!this.apiDown || !!this.tv.hasBackup)
             // Nothing from this PC is on it, so it's being used for something else
             && this.status.displayActive !== false
     }
@@ -405,6 +440,7 @@ class NetworkTV extends EventEmitter {
 
     async handlePowerChange(power) {
         console.log(`NetworkTV: TV is now ${power}`)
+        this.note("power", { power })
         this.setStatus({ power })
         if (power === "on") {
             this.wakingUntil = 0
@@ -491,9 +527,12 @@ class NetworkTV extends EventEmitter {
     }
 
     noteApiSuccess() {
+        const wasDown = this.apiDown
         if (this.health.recordSuccess()) {
             console.log("NetworkTV: control API is responding")
+            this.note("api.state", { state: "ok" })
             this.setStatus({ api: "ok" })
+            if (wasDown) this.logSnapshot("api recovered")
         }
     }
 
@@ -501,6 +540,8 @@ class NetworkTV extends EventEmitter {
         const state = this.health.recordFailure({ unauthorized: e.status === 401 })
         if (!state) return
         console.log(`NetworkTV: control API is now ${state}: ${e.message}`)
+        this.note("api.state", { state, error: e.message, failures: this.health.failures })
+        this.logSnapshot("api down")
         // Don't keep showing values that can no longer be read or changed
         this.setStatus({ api: state, volume: null, muted: null, ambilight: null, ambilightStyle: null })
     }
@@ -510,15 +551,26 @@ class NetworkTV extends EventEmitter {
     async apiCommand(send) {
         const tv = this.requireTV()
         try {
-            const result = await send(tv)
+            const result = await send(tv, { apiDown: this.apiDown })
+            // It tells nothing about the API, unless it's the API that just refused it
+            if (result?.via === "backup") {
+                console.log("NetworkTV: sent over the backup link")
+                if (result.apiError) this.noteApiFailure(result.apiError)
+                return result
+            }
             const wasOk = this.health.state === "ok"
             this.noteApiSuccess()
             if (!wasOk) this.readStateSoon()
             return result
         } catch (e) {
             if (e.status === "unsupported") throw e
-            this.noteApiFailure(e)
-            throw new Error(e.status === 401 ? "The TV no longer accepts this app. Pair it again in Display Control settings." : `TV not responding (${e.message})`)
+            this.note("command.failed", { error: e.message, api: this.health.state, mayHaveLanded: !!e.mayHaveLanded })
+            // The backup link failing says nothing about the API
+            if (e.name !== "TitanMqttError") this.noteApiFailure(e)
+            throw Object.assign(
+                new Error(e.status === 401 ? "The TV no longer accepts this app. Pair it again in Display Control settings." : `TV not responding (${e.message})`),
+                { mayHaveLanded: e.mayHaveLanded }
+            )
         }
     }
 
@@ -580,7 +632,11 @@ class NetworkTV extends EventEmitter {
         const { tv, pairing, name } = this.pairing
         const credentials = await tv.pairGrant(pairing, pin)
         this.pairing = null
-        this.saveCredentials(credentials)
+        // Pairing with the API again has nothing to do with the backup link
+        const backup = (this.tv?.host === tv.host ? this.tv?.backupCredentials : null)
+        this.tv?.closeBackup?.()
+        tv.setBackupCredentials(backup)
+        this.saveCredentials({ ...credentials, ...(backup ? { backup } : {}) })
         this.tv = tv
         this.health.reset()
         this.setStatus({ api: "unknown" })
@@ -596,6 +652,36 @@ class NetworkTV extends EventEmitter {
         })
         this.tracker.reset()
         this.restartPolling()
+        this.emit("changed")
+    }
+
+    // Makes the TV show a PIN. Resolves with how many seconds it stays valid.
+    async startBackupPairing() {
+        this.note("backup.pairingStart")
+        return this.requireTV().startBackupPairing()
+    }
+
+    async finishBackupPairing(pin) {
+        const tv = this.requireTV()
+        await tv.finishBackupPairing(pin)
+        this.saveCredentials({ deviceId: tv.deviceId, authKey: tv.authKey, backup: tv.backupCredentials })
+        this.note("backup.paired")
+        this.emit("changed")
+        // Records the TV's model and firmware, and what it says it can do
+        this.testBackup().catch(e => this.note("backup.testFailed", { error: e.message }))
+    }
+
+    testBackup() {
+        const tv = this.requireTV()
+        if (!tv.hasBackup) throw new Error("The backup link isn't paired.")
+        return tv.testBackup()
+    }
+
+    removeBackup() {
+        const tv = this.requireTV()
+        tv.setBackupCredentials(null)
+        this.saveCredentials({ deviceId: tv.deviceId, authKey: tv.authKey })
+        this.note("backup.removed")
         this.emit("changed")
     }
 
@@ -638,7 +724,7 @@ class NetworkTV extends EventEmitter {
             this.wakingUntil = Date.now() + WAKE_GRACE_MS
             await wakeOnLan(macs, tv.host)
         } else {
-            await this.apiCommand(tv => tv.standby())
+            await this.apiCommand((tv, options) => tv.standby(options))
             this.clearStandbyFailure()
         }
     }
@@ -663,6 +749,7 @@ class NetworkTV extends EventEmitter {
 
     // A TV that was already off when the PC went to sleep stays off when it wakes
     handleSuspend() {
+        this.note("pc.suspend", { power: this.tracker.state, api: this.health.state })
         // It may still look like it's on after being sent to standby for the screens
         if (this.config.followSleep !== false && this.tracker.state === "on" && !this.wakeAfterSleep) {
             this.wakeAfterSleep = true
@@ -690,6 +777,7 @@ class NetworkTV extends EventEmitter {
         }
         this.wakeAfterSleep = false
         console.log("NetworkTV: waking the TV after sleep")
+        this.note("tv.wake", { reason: "screens returned" })
         return this.wakeUntilOn()
     }
 
@@ -724,7 +812,7 @@ class NetworkTV extends EventEmitter {
         if (!this.isPaired || this.tracker.state !== "on") return false
         const done = new Int32Array(new SharedArrayBuffer(4))
         const worker = new Worker(path.join(__dirname, "TVStandbyWorker.js"), {
-            workerData: { host: this.tv.host, deviceId: this.tv.deviceId, authKey: this.tv.authKey, done }
+            workerData: { host: this.tv.host, deviceId: this.tv.deviceId, authKey: this.tv.authKey, backup: this.tv.backupCredentials, apiDown: this.apiDown, diagnosticsPath: this.diagnosticsPath, done }
         })
         worker.on("error", e => console.log("NetworkTV: standby worker failed", e.message))
         Atomics.wait(done, 0, 0, SHUTDOWN_WAIT_MS)
@@ -757,9 +845,9 @@ class NetworkTV extends EventEmitter {
     }
 
     async toggleMute() {
-        await this.apiCommand(tv => tv.sendKey("Mute"))
-        const muted = !this.status.muted
-        this.setStatus({ muted })
+        await this.apiCommand((tv, options) => tv.sendKey("Mute", options))
+        // During an outage it can't be read, so it isn't guessed at
+        if (this.status.muted !== null) this.setStatus({ muted: !this.status.muted })
     }
 
     async setAmbilight(on) {
@@ -778,11 +866,11 @@ class NetworkTV extends EventEmitter {
     }
 
     async pressButton(button) {
-        await this.apiCommand(tv => tv.pressButton(button))
+        await this.apiCommand((tv, options) => tv.pressButton(button, options))
     }
 
     async sendKey(key) {
-        await this.apiCommand(tv => tv.sendKey(key))
+        await this.apiCommand((tv, options) => tv.sendKey(key, options))
     }
 
     //
