@@ -4325,13 +4325,7 @@ function createPanel(toggleOnLoad = false, isRefreshing = false, showOnLoad = tr
         isWindowsUserIdle = true
       } else if(setting.data === 0) {
         // Active
-        if(isWindowsUserIdle) {
-          isWindowsUserIdle = false
-          console.log("Displays have woken up.")
-          recentlyWokeUp = true
-          handleMetricsChange("GUID_SESSION_USER_PRESENCE")
-          if(!resumeRecoveryInProgress) clearRecentlyWokeUpLater()
-        }
+        handleDisplaysWokeUp()
       }
     } else if(setting.name === "GUID_VIDEO_POWERDOWN_TIMEOUT") {
       // "Turn off my screen after"
@@ -5801,6 +5795,18 @@ powerMonitor.on("resume", async () => {
     clearRecentlyWokeUpLater()
   }
 })
+
+function handleDisplaysWokeUp() {
+  if(!isWindowsUserIdle) return
+  isWindowsUserIdle = false
+  console.log("Displays have woken up.")
+  // The worker isn't started while the displays are off, so if the app was opened
+  // then, it's still waiting to. Its "ready" event finishes the rest of startup.
+  startMonitorThread()
+  recentlyWokeUp = true
+  handleMetricsChange("GUID_SESSION_USER_PRESENCE")
+  if(!resumeRecoveryInProgress) clearRecentlyWokeUpLater()
+}
 
 function handleMetricsChange(type) {
   console.log(`Event: handleMetricsChange (${type})`);
