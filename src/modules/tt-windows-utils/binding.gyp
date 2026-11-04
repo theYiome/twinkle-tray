@@ -22,6 +22,7 @@
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
       ],
+      "libraries": [ "dwmapi.lib" ],
       'msvs_settings': {
         'VCCLCompilerTool': { "ExceptionHandling": 1 }
       },

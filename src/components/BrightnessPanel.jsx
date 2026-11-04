@@ -5,6 +5,7 @@ import HDRSliders from "./HDRSliders";
 import TranslateReact from "../TranslateReact"
 import getMonitorName from "../utils/BrightnessPanel/getMonitorName";
 import { usesGammaSlider, isAdjustableDisplay } from "./utilts/monitor.util";
+import NetworkTVCard from "./NetworkTVCard";
 
 const BrightnessPanel = memo(function BrightnessPanel() {
 
@@ -398,6 +399,7 @@ const BrightnessPanel = memo(function BrightnessPanel() {
         </div>
       </div>
       {state.sleeping ? (<div></div>) : getMonitors()}
+      {state.sleeping ? null : <NetworkTVCard T={T} />}
       {
         (state.update && state.update.show)
           ?

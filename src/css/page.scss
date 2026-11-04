@@ -722,6 +722,25 @@ html body[data-is-win11="true"] {
     margin: -10px 0 -12px;
 }
 
+.display-control-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    input[type="text"] {
+        flex: 1;
+    }
+
+    & + .display-control-row {
+        margin-top: 8px;
+    }
+}
+
+.display-control-error {
+    margin-top: 8px;
+    color: #ff8a80;
+}
+
 .hotkey-values-list {
     
     label {

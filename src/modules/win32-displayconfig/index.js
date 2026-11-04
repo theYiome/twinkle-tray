@@ -376,6 +376,111 @@ module.exports.toggleEnabledDisplays = async (args) => {
   await win32_toggleEnabledDisplays({ enable, disable, persistent });
 };
 
+/**
+ * @typedef DisplayTarget
+ * @type {object}
+ * @property {string} devicePath The Windows NT device path of the display
+ * @property {string} displayName The "friendly name" of the display
+ * @property {string} outputTechnology
+ * @property {ConfigId} targetConfigId
+ * @property {boolean} active Whether the display is part of the desktop
+ * @property {number | undefined} sourceId The source it shows, when active. Displays
+ *   sharing a source are mirrored.
+ * @property {SourceMode | undefined} sourceMode The source's mode, when active
+ */
+
+/**
+ * Lists every attached display, including those that are currently turned off.
+ *
+ * {@link extractDisplayConfig} can't be used for this, since a display that is
+ * off has no modes and gets filtered out.
+ *
+ * @returns {Promise<DisplayTarget[]>}
+ */
+module.exports.listDisplayTargets = async () => {
+  const config = await module.exports.queryDisplayConfig();
+  const targets = new Map();
+
+  for (const { value } of config.pathArray) {
+    const { sourceInfo, targetInfo, flags } = value;
+    if (!targetInfo.targetAvailable) {
+      continue;
+    }
+
+    const name = config.nameArray.find(
+      (n) =>
+        n.adapterId.LowPart === targetInfo.adapterId.LowPart &&
+        n.adapterId.HighPart === targetInfo.adapterId.HighPart &&
+        n.id === targetInfo.id &&
+        n.monitorDevicePath.length > 0
+    );
+    if (name === undefined) {
+      continue;
+    }
+
+    if (!targets.has(name.monitorDevicePath)) {
+      targets.set(name.monitorDevicePath, {
+        devicePath: name.monitorDevicePath,
+        displayName: name.monitorFriendlyDeviceName,
+        outputTechnology: targetInfo.outputTechnology,
+        targetConfigId: { adapterId: targetInfo.adapterId, id: targetInfo.id },
+        active: false,
+      });
+    }
+
+    if (flags & 1) {
+      const target = targets.get(name.monitorDevicePath);
+      target.active = true;
+      target.sourceId = sourceInfo.id;
+      target.sourceMode = config.modeArray[sourceInfo.modeInfoIdx]?.value?.sourceMode;
+    }
+  }
+
+  return Array.from(targets.values());
+};
+
+/**
+ * @typedef SetDisplayActiveArgs
+ * @type {object}
+ * @property {string} devicePath Exact Windows NT device path of the display
+ * @property {boolean} active Whether to turn the display on or off
+ * @property {string} [mirrorDevicePath] When turning on, mirror this display instead of
+ *   extending the desktop
+ */
+
+/**
+ * Turns one display on or off, leaving the rest of the layout alone. The result
+ * is saved, so Windows keeps it across hot-plug events and restarts.
+ *
+ * @param {SetDisplayActiveArgs} args
+ */
+module.exports.setDisplayActive = async ({ devicePath, active, mirrorDevicePath }) => {
+  const targets = await module.exports.listDisplayTargets();
+  const target = targets.find((entry) => entry.devicePath === devicePath);
+  if (target === undefined) {
+    throw new Win32Error(1168); // ERROR_NOT_FOUND
+  }
+  const mirrored = targets.find((entry) => entry.devicePath === mirrorDevicePath);
+
+  await new Promise((resolve, reject) => {
+    const ran = addon.win32_setTargetActive(
+      target.targetConfigId,
+      !!active,
+      mirrored?.targetConfigId ?? null,
+      (_, errorCode) => {
+        if (errorCode === 0) {
+          resolve();
+        } else {
+          reject(new Win32Error(errorCode));
+        }
+      }
+    );
+    if (!ran) {
+      reject(new Win32Error(87));
+    }
+  });
+};
+
 function setSubtract(left, right) {
   const ret = new Set();
   for (const entry of left) {

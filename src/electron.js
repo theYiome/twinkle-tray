@@ -61,7 +61,7 @@ process.on("unhandledRejection", (reason) => {
 
 const { Readable } = require("node:stream")
 //require("os").setPriority(0, require("os").constants.priority.PRIORITY_BELOW_NORMAL)
-const { BrowserWindow, nativeTheme, systemPreferences, Menu, ipcMain, screen, globalShortcut, powerMonitor } = require('electron')
+const { BrowserWindow, nativeTheme, systemPreferences, Menu, ipcMain, screen, globalShortcut, powerMonitor, safeStorage } = require('electron')
 const uuid = require('crypto').randomUUID
 
 // Expose GC
@@ -80,6 +80,11 @@ const knownDDCBrightnessVCPs = monitorRules?.ddcBrightnessCodes
 const { fork, exec } = require('child_process');
 const { VerticalRefreshRateContext, addDisplayChangeListener } = require("win32-displayconfig");
 const refreshCtx = new VerticalRefreshRateContext();
+const w32disp = require("win32-displayconfig");
+const { NetworkTV } = require("./NetworkTV");
+const { DisplayOverlays, MINIMUM_LEVEL: MINIMUM_DIM_LEVEL } = require("./DisplayOverlays");
+const { DisplayLayouts } = require("./DisplayLayouts");
+const { LocalAPI } = require("./LocalAPI");
 
 const {WindowUtils, BrightnessKeys, MediaStatus, PowerEvents, AppStartup, DisplayBrightness} = require("tt-windows-utils")
 const setWindowPos = () => { }
@@ -906,7 +911,7 @@ const defaultSettings = {
   extendMinimumBreakpoints: {},
   sdrAsMainSliderDisplays: {},
   sdrAsMainSlider: false,
-  checkForUpdates: !isDev,
+  checkForUpdates: false, // Upstream releases would replace this fork
   dismissedUpdate: '',
   language: "system",
   names: {},
@@ -974,6 +979,10 @@ const defaultSettings = {
   uuid: uuid(),
   branch: (appVersionTag?.indexOf?.("beta") === 0 ? "beta" : "master"),
   lightSensor: defaultLightSensorSettings,
+  networkTV: {},
+  displayDimLevels: {},
+  localAPIEnabled: false,
+  localAPIPort: 47380,
 }
 
 const tempSettings = {
@@ -1852,6 +1861,11 @@ async function doHotkey(hotkey, options = {}) {
     for (const action of hotkey.actions) {
       try {
 
+        if (displayControlHotkeys[action.type]) {
+          await displayControlHotkeys[action.type](action)
+          continue
+        }
+
         // Wait for refresh if user hasn't done so recently
         if (action.type !== "refresh" && lastRefreshMonitors < Date.now() - 10000) {
           await refreshMonitors()
@@ -2179,7 +2193,7 @@ function determineTheme(themeName) {
 
 function enableStartup(appName, appPath) {
     const runKey = reg.openKey(reg.HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run', reg.Access.ALL_ACCESS);
-    reg.setValueSZ(runKey, appName, `"${appPath}"`);
+    reg.setValueSZ(runKey, appName, `"${appPath}" --autostart`);
 }
 
 function disableStartup(appName) {
@@ -3759,6 +3773,281 @@ ipcMain.on('save-report', async () => {
 
 //
 //
+//    Display control & network TV
+//
+//
+
+const displayOverlays = new DisplayOverlays()
+const displayLayouts = new DisplayLayouts(path.join(configFilesDir, `display-layouts${(isDev ? "-dev" : "")}.json`))
+const displayControlSecretsPath = path.join(configFilesDir, `display-control${(isDev ? "-dev" : "")}.secrets`)
+let displayTargets = []
+let displayControlRefreshTimeout = false
+
+// The TV's login and the API token don't belong in settings.json, which
+// is also what gets attached to diagnostic reports.
+function readDisplayControlSecrets() {
+  try {
+    if (!fs.existsSync(displayControlSecretsPath)) return {}
+    return JSON.parse(safeStorage.decryptString(fs.readFileSync(displayControlSecretsPath)))
+  } catch (e) {
+    console.log("Couldn't read display control secrets", e.message)
+    return {}
+  }
+}
+
+function writeDisplayControlSecrets(changes) {
+  const secrets = Object.assign(readDisplayControlSecrets(), changes)
+  fs.writeFileSync(displayControlSecretsPath, safeStorage.encryptString(JSON.stringify(secrets)))
+}
+
+function getLocalAPIToken() {
+  const token = readDisplayControlSecrets().apiToken
+  if (token) return token
+  const newToken = require("crypto").randomBytes(24).toString("hex")
+  writeDisplayControlSecrets({ apiToken: newToken })
+  return newToken
+}
+
+const networkTV = new NetworkTV({
+  getConfig: () => settings.networkTV,
+  setConfig: changes => writeSettings({ networkTV: Object.assign({}, settings.networkTV, changes) }, false),
+  loadCredentials: () => readDisplayControlSecrets().tv,
+  saveCredentials: tv => writeDisplayControlSecrets({ tv }),
+  displays: {
+    list: () => w32disp.listDisplayTargets(),
+    setActive: args => w32disp.setDisplayActive(args)
+  }
+})
+networkTV.on("changed", () => sendDisplayControlState())
+networkTV.on("display-changed", () => refreshDisplayControl())
+
+function displayKeyFromPath(devicePath) {
+  return devicePath.split("#")[2]?.split("_")[0] ?? devicePath
+}
+
+function targetBounds(target) {
+  const { position, width, height } = target.sourceMode ?? {}
+  if (!position || !width || !height) return null
+  return { x: position.x, y: position.y, width, height }
+}
+
+function getDisplayControlState() {
+  return {
+    tv: networkTV.getState(),
+    displays: displayTargets.map(target => ({
+      key: displayKeyFromPath(target.devicePath),
+      devicePath: target.devicePath,
+      name: target.displayName,
+      connector: target.outputTechnology,
+      active: target.active,
+      bounds: targetBounds(target),
+      dim: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100,
+      mirroredWith: (target.active
+        ? displayTargets.filter(other => other !== target && other.active && other.sourceId === target.sourceId).map(other => other.displayName)
+        : [])
+    })),
+    layouts: displayLayouts.list(),
+    api: {
+      enabled: !!settings.localAPIEnabled,
+      port: settings.localAPIPort,
+      running: !!localAPI.server,
+      error: localAPI.lastError
+    }
+  }
+}
+
+function sendDisplayControlState() {
+  sendToAllWindows("display-control-state", getDisplayControlState())
+}
+
+async function refreshDisplayControl() {
+  try {
+    displayTargets = await w32disp.listDisplayTargets()
+    displayOverlays.apply(displayTargets.filter(target => target.active).map(target => ({
+      bounds: targetBounds(target),
+      level: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100
+    })))
+  } catch (e) {
+    console.log("Couldn't read display targets", e.message)
+  }
+  sendDisplayControlState()
+}
+
+function scheduleDisplayControlRefresh() {
+  if (displayControlRefreshTimeout) clearTimeout(displayControlRefreshTimeout)
+  displayControlRefreshTimeout = setTimeout(() => {
+    displayControlRefreshTimeout = false
+    refreshDisplayControl()
+  }, 500)
+}
+
+function requireDisplayTarget(key) {
+  const target = displayTargets.find(entry => displayKeyFromPath(entry.devicePath) === key)
+  if (!target) throw Object.assign(new Error(`There's no display "${key}".`), { status: 404 })
+  return target
+}
+
+async function setDisplayActive(key, active, extend = false) {
+  const target = requireDisplayTarget(key)
+  if (target.devicePath === settings.networkTV?.displayPath && networkTV.isPaired) {
+    if (extend) {
+      await networkTV.extendDisplay()
+    } else {
+      await networkTV.setDisplayConnected(active)
+    }
+  } else {
+    await w32disp.setDisplayActive({ devicePath: target.devicePath, active })
+  }
+  await refreshDisplayControl()
+}
+
+function moveWindowsOffDisplay(key) {
+  const target = requireDisplayTarget(key)
+  const from = targetBounds(target)
+  if (!target.active || !from) throw new Error(`${target.displayName} isn't on.`)
+
+  // Anywhere with its own desktop area will do, but the main display is the safest bet
+  const others = displayTargets.filter(entry => entry.active && entry.sourceId !== target.sourceId && targetBounds(entry))
+  const destination = others.find(entry => targetBounds(entry).x === 0 && targetBounds(entry).y === 0) ?? others[0]
+  if (!destination) throw new Error("There's no other screen to move windows to.")
+
+  const to = targetBounds(destination)
+  return WindowUtils.moveWindowsBetweenAreas(
+    { left: from.x, top: from.y, right: from.x + from.width, bottom: from.y + from.height },
+    { left: to.x, top: to.y, right: to.x + to.width, bottom: to.y + to.height }
+  )
+}
+
+function setDisplayDim(key, level) {
+  requireDisplayTarget(key)
+  const dim = Math.max(MINIMUM_DIM_LEVEL, Math.min(100, Math.round(Number(level))))
+  if (!Number.isFinite(dim)) throw Object.assign(new Error("A dim level has to be a number."), { status: 400 })
+  writeSettings({ displayDimLevels: Object.assign({}, settings.displayDimLevels, { [key]: dim }) }, false)
+  return refreshDisplayControl()
+}
+
+async function configureLocalAPI({ enabled, port }) {
+  const newPort = (port === undefined ? settings.localAPIPort : parseInt(port))
+  if (!(newPort >= 1024 && newPort <= 65535)) throw new Error("Pick a port from 1024 to 65535.")
+  writeSettings({ localAPIEnabled: (enabled === undefined ? settings.localAPIEnabled : !!enabled), localAPIPort: newPort }, false)
+  await startLocalAPI()
+}
+
+async function startLocalAPI() {
+  if (settings.localAPIEnabled) {
+    await localAPI.start(settings.localAPIPort)
+  } else {
+    await localAPI.stop()
+  }
+  sendDisplayControlState()
+}
+
+function setMonitorBrightness(key, level) {
+  const monitor = monitors[key]
+  if (!monitor) throw Object.assign(new Error(`There's no display "${key}".`), { status: 404 })
+  if (!Number.isFinite(Number(level))) throw Object.assign(new Error("A brightness level has to be a number."), { status: 400 })
+  updateBrightnessThrottle(monitor.id, Math.max(0, Math.min(100, Number(level))))
+}
+
+function sendTVKey(key) {
+  if (!/^[A-Za-z0-9]+$/.test(`${key}`)) throw Object.assign(new Error("That's not a valid key name."), { status: 400 })
+  return networkTV.sendKey(key)
+}
+
+const displayControlCommands = {
+  "tv.discover": () => networkTV.discover(),
+  "tv.pairStart": ({ host }) => networkTV.startPairing(host),
+  "tv.pairFinish": ({ pin }) => networkTV.finishPairing(pin),
+  "tv.forget": () => networkTV.forget(),
+  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown }) => {
+    const changes = {}
+    if (autoDisconnect !== undefined) changes.autoDisconnect = !!autoDisconnect
+    if (wakeOnStartup !== undefined) changes.wakeOnStartup = !!wakeOnStartup
+    if (standbyOnShutdown !== undefined) changes.standbyOnShutdown = !!standbyOnShutdown
+    if (displayPath !== undefined) changes.displayPath = displayPath
+    writeSettings({ networkTV: Object.assign({}, settings.networkTV, changes) }, false)
+    return networkTV.readDisplay()
+  },
+  "tv.power": ({ on }) => networkTV.setPower(!!on),
+  "tv.togglePower": () => networkTV.togglePower(),
+  "tv.volume": ({ level }) => networkTV.setVolume(level),
+  "tv.toggleMute": () => networkTV.toggleMute(),
+  "tv.ambilight": ({ on }) => networkTV.setAmbilight(!!on),
+  "tv.key": ({ key }) => sendTVKey(key),
+  "display.setActive": ({ key, active, extend }) => setDisplayActive(key, !!active, !!extend),
+  "display.moveWindows": ({ key }) => moveWindowsOffDisplay(key),
+  "display.dim": ({ key, level }) => setDisplayDim(key, level),
+  "layout.save": async ({ name }) => { await displayLayouts.save(name); sendDisplayControlState() },
+  "layout.apply": async ({ name }) => { await displayLayouts.apply(name); await refreshDisplayControl() },
+  "layout.delete": ({ name }) => { displayLayouts.delete(name); sendDisplayControlState() },
+  "api.configure": args => configureLocalAPI(args),
+  "api.getToken": () => getLocalAPIToken(),
+  "api.resetToken": () => {
+    writeDisplayControlSecrets({ apiToken: null })
+    return getLocalAPIToken()
+  }
+}
+
+// Renderers get errors back as text, since the Electron wrapper around rejections is unreadable
+ipcMain.handle("display-control", async (event, { command, args = {} }) => {
+  try {
+    if (!displayControlCommands[command]) throw new Error(`Unknown command: ${command}`)
+    return { ok: true, result: await displayControlCommands[command](args) }
+  } catch (e) {
+    console.log(`display-control ${command} failed:`, e.message)
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.on("request-display-control", event => {
+  event.sender.send("display-control-state", getDisplayControlState())
+})
+
+const localAPI = new LocalAPI({
+  getToken: getLocalAPIToken,
+  routes: {
+    "GET /status": () => getDisplayControlState(),
+    "POST /tv/power": ({ on }) => displayControlCommands["tv.power"]({ on }),
+    "POST /tv/power/toggle": () => networkTV.togglePower(),
+    "POST /tv/volume": ({ level }) => networkTV.setVolume(level),
+    "POST /tv/mute/toggle": () => networkTV.toggleMute(),
+    "POST /tv/ambilight": ({ on }) => networkTV.setAmbilight(!!on),
+    "POST /tv/key": ({ key }) => sendTVKey(key),
+    "POST /displays/:key/connect": (body, { key }) => setDisplayActive(key, true, !!body.extend),
+    "POST /displays/:key/disconnect": (body, { key }) => setDisplayActive(key, false),
+    "POST /displays/:key/move-windows": (body, { key }) => moveWindowsOffDisplay(key),
+    "POST /displays/:key/dim": ({ level }, { key }) => setDisplayDim(key, level),
+    "POST /displays/:key/brightness": ({ level }, { key }) => setMonitorBrightness(key, level),
+    "POST /layouts/:name/save": (body, { name }) => displayControlCommands["layout.save"]({ name }),
+    "POST /layouts/:name/apply": (body, { name }) => displayControlCommands["layout.apply"]({ name })
+  }
+})
+
+const displayControlHotkeys = {
+  "tv-power": () => networkTV.togglePower(),
+  "tv-mute": () => networkTV.toggleMute(),
+  "display-toggle": async ({ display }) => setDisplayActive(display, !requireDisplayTarget(display).active),
+  "move-windows": ({ display }) => moveWindowsOffDisplay(display),
+  "layout-apply": ({ layout }) => displayControlCommands["layout.apply"]({ name: layout })
+}
+
+async function startDisplayControl() {
+  addDisplayChangeListener(() => scheduleDisplayControlRefresh())
+  screen.addListener("display-added", scheduleDisplayControlRefresh)
+  screen.addListener("display-removed", scheduleDisplayControlRefresh)
+  screen.addListener("display-metrics-changed", scheduleDisplayControlRefresh)
+  await refreshDisplayControl()
+  networkTV.start()
+  // Only the Windows startup entry passes this, so reopening the app doesn't wake the TV
+  if (app.commandLine.hasSwitch("autostart")) networkTV.wakeAtLogin()
+  await startLocalAPI()
+}
+
+powerMonitor.on("suspend", () => networkTV.pause())
+powerMonitor.on("resume", () => networkTV.restartPolling())
+
+//
+//
 //    Initialize Panel
 //
 //
@@ -3826,6 +4115,12 @@ function createPanel(toggleOnLoad = false, isRefreshing = false, showOnLoad = tr
     stopNativeBrightnessKeyRepeat()
     mainWindow = null
   });
+  // Only sent once Windows is really ending the session, unlike query-session-end,
+  // which another app can still veto.
+  mainWindow.on("session-end", () => {
+    console.log("Event: session-end. TV sent to standby:", networkTV.standbyBeforeExit())
+  });
+
   mainWindow.on("minimize", () => { console.log("~~~~~ MAIN WINDOW MINIMIZED ~~~~~~") });
   mainWindow.on("restore", () => { console.log("~~~~~ MAIN WINDOW RESTORED ~~~~~~") });
 
@@ -4518,6 +4813,7 @@ app.on("ready", async () => {
   getLocalization()
   showIntro()
   createPanel(false, true)
+  startDisplayControl()
 
   await doWMIBridgeTest()
   startMonitorThread()
@@ -4565,6 +4861,9 @@ app.on("activate", () => {
 app.on('quit', () => {
   restoreGammaRampsOnQuit()
   try {
+    networkTV.stop()
+    localAPI.stop()
+    displayOverlays.destroy()
     PowerEvents.unregisterPowerSettingNotifications()
     BrightnessKeys.unregister()
     nativeBrightnessKeysRegistered = false

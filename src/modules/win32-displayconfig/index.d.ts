@@ -153,6 +153,26 @@ export interface ToggleEnabledDisplayArgs {
   persistent?: boolean;
 }
 
+export interface DisplayTarget {
+  devicePath: string;
+  displayName: string;
+  outputTechnology: string;
+  targetConfigId: ConfigId;
+  active: boolean;
+  sourceId?: number;
+  sourceMode?: SourceMode;
+}
+
+export function listDisplayTargets(): Promise<DisplayTarget[]>;
+
+export interface SetDisplayActiveArgs {
+  devicePath: string;
+  active: boolean;
+  mirrorDevicePath?: string;
+}
+
+export function setDisplayActive(args: SetDisplayActiveArgs): Promise<void>;
+
 export function toggleEnabledDisplays(
   args: ToggleEnabledDisplayArgs
 ): Promise<void>;

@@ -20,6 +20,7 @@ import { SettingsOption, SettingsChild } from "./SettingsOption";
 import SafeRender from "./SafeRender";
 import { getMonitorName, isAdjustableDisplay, displayLevel } from './utilts/monitor.util';
 import { LightSensorSettings } from "./light-sensor/LightSensorSettings";
+import DisplayControlSettings from "./DisplayControlSettings";
 
 import DefaultIcon from "../assets/tray-icons/dark/icon@4x.png"
 import MDL2Icon from "../assets/tray-icons/dark/mdl2@4x.png"
@@ -369,6 +370,11 @@ export default class SettingsWindow extends PureComponent {
                 id: "monitors",
                 label: T.t("SETTINGS_SIDEBAR_MONITORS"),
                 icon: "&#xE7F4;"
+            },
+            {
+                id: "display-control",
+                label: T.t("SETTINGS_SIDEBAR_DISPLAY_CONTROL"),
+                icon: "&#xE7F8;"
             },
             {
                 id: "features",
@@ -1524,6 +1530,10 @@ export default class SettingsWindow extends PureComponent {
                             </SettingsPage>
 
 
+                            <SettingsPage current={this.state.activePage} id="display-control">
+                                <DisplayControlSettings T={T} />
+                            </SettingsPage>
+
                             <SettingsPage current={this.state.activePage} id="monitors">
 
                                 <div className="pageSection">
@@ -1940,7 +1950,8 @@ function SettingsPage(props) {
 
 function ActionItem(props) {
     const { action, monitors, monitorNames } = props
-    const showDisplaysList = (action.type != "off" && action.type != "refresh")
+    const usesDisplayControl = ["tv-power", "tv-mute", "display-toggle", "move-windows", "layout-apply"].includes(action.type)
+    const showDisplaysList = (action.type != "off" && action.type != "refresh" && !usesDisplayControl)
 
     const getHotkeyMonitors = () => {
         try {
@@ -1971,8 +1982,34 @@ function ActionItem(props) {
     const getHotkeyInput = () => {
         if (action.type === "off") {
             return (<div className="input-row"><p style={{lineHeight: 1.2}}>{T.t("SETTINGS_HOTKEY_OFF_WARN")}</p></div>)
-        } else if (action.type === "refresh") {
+        } else if (action.type === "refresh" || action.type === "tv-power" || action.type === "tv-mute") {
             return null
+        } else if (action.type === "display-toggle" || action.type === "move-windows") {
+            return (
+                <div className="input-row"><div className="field">
+                    <label>{T.t("SETTINGS_HOTKEY_DISPLAY")}</label>
+                    <select value={action.display ?? ""} onChange={e => {
+                        action.display = e.target.value
+                        props.onChange?.(action)
+                    }}>
+                        <option value="">{T.t("SETTINGS_TV_DISPLAY_NONE")}</option>
+                        {window.displayControl?.displays?.map(display => <option key={display.key} value={display.key}>{display.name}</option>)}
+                    </select>
+                </div></div>
+            )
+        } else if (action.type === "layout-apply") {
+            return (
+                <div className="input-row"><div className="field">
+                    <label>{T.t("SETTINGS_HOTKEY_LAYOUT")}</label>
+                    <select value={action.layout ?? ""} onChange={e => {
+                        action.layout = e.target.value
+                        props.onChange?.(action)
+                    }}>
+                        <option value="">{T.t("SETTINGS_TV_DISPLAY_NONE")}</option>
+                        {window.displayControl?.layouts?.map(layout => <option key={layout} value={layout}>{layout}</option>)}
+                    </select>
+                </div></div>
+            )
         } else {
             let selectBoxValue = action.target
             if (!(selectBoxValue === "brightness" || selectBoxValue === "sdr" || selectBoxValue === "contrast" || selectBoxValue === "volume" || selectBoxValue === "powerState")) {
@@ -2096,6 +2133,11 @@ function ActionItem(props) {
                                 <option value="cycle">{T.t("SETTINGS_HOTKEY_ACTION_CYCLE")}</option>
                                 <option value="off">{T.t("PANEL_BUTTON_TURN_OFF_DISPLAYS")}</option>
                                 <option value="refresh">{T.t("GENERIC_REFRESH_DISPLAYS")}</option>
+                                <option value="tv-power">{T.t("SETTINGS_HOTKEY_ACTION_TV_POWER")}</option>
+                                <option value="tv-mute">{T.t("SETTINGS_HOTKEY_ACTION_TV_MUTE")}</option>
+                                <option value="display-toggle">{T.t("SETTINGS_HOTKEY_ACTION_DISPLAY_TOGGLE")}</option>
+                                <option value="move-windows">{T.t("SETTINGS_HOTKEY_ACTION_MOVE_WINDOWS")}</option>
+                                <option value="layout-apply">{T.t("SETTINGS_HOTKEY_ACTION_LAYOUT")}</option>
                             </select>
                         </div>
                     </div>

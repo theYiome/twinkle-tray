@@ -106,6 +106,10 @@ function openURL(url) {
     ipc.send('open-url', url)
 }
 
+function displayControl(command, args) {
+    return ipc.invoke('display-control', { command, args })
+}
+
 function getUpdate() {
     ipc.send('get-update', window.latestVersion)
     ipc.send('clear-update', window.latestVersion.version)
@@ -145,6 +149,14 @@ ipc.on("monitors-updated", (e, monitors) => {
     window.lastUpdate = Date.now()
     window.dispatchEvent(new CustomEvent('monitorsUpdated', {
         detail: monitors
+    }))
+})
+
+// Display control and network TV state
+ipc.on("display-control-state", (e, state) => {
+    window.displayControl = state
+    window.dispatchEvent(new CustomEvent('displayControlUpdated', {
+        detail: state
     }))
 })
 
@@ -286,6 +298,7 @@ window.retryDDCValidation = retryDDCValidation
 window.getUpdate = getUpdate
 window.checkForUpdates = checkForUpdates
 window.openURL = openURL
+window.sendDisplayControl = displayControl
 window.allMonitors = []
 window.lastUpdate = Date.now()
 window.showPanel = false

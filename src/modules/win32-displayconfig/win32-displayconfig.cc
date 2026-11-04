@@ -7,6 +7,7 @@
 #include <string.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -425,6 +426,115 @@ LONG ToggleEnabled(const std::shared_ptr<struct Win32DeviceConfigToggleEnabled> 
         persistentQueryResults->rgPathInfo.data(),
         persistentQueryResults->rgModeInfo.size(),
         persistentQueryResults->rgModeInfo.data(),
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE);
+}
+
+static bool IsSameTarget(const DISPLAYCONFIG_PATH_INFO &path, const struct Win32TransientDeviceId &target) {
+    return path.targetInfo.adapterId.LowPart == target.adapterId.LowPart &&
+           path.targetInfo.adapterId.HighPart == target.adapterId.HighPart &&
+           path.targetInfo.id == target.id;
+}
+
+static DISPLAYCONFIG_PATH_INFO WithoutModes(const DISPLAYCONFIG_PATH_INFO &path) {
+    auto copied = path;
+    copied.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    copied.sourceInfo.statusFlags = 0;
+    copied.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    copied.targetInfo.statusFlags = 0;
+    return copied;
+}
+
+// Turns one display on or off and leaves every other active path alone.
+// ToggleEnabled can't do this: it skips paths without modes, and a display that
+// is off has none, so it can never be turned back on.
+LONG SetTargetActive(const struct Win32TransientDeviceId target, BOOL active, BOOL hasShareTarget, const struct Win32TransientDeviceId shareTarget) {
+    auto query = DoQueryDisplayConfig();
+    if (query->error != ERROR_SUCCESS) {
+        return query->error;
+    }
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> next;
+    std::vector<UINT32> usedSources;
+    BOOL alreadyActive = false;
+    BOOL foundShareSource = false;
+    UINT32 shareSource = 0;
+
+    for (const auto &path : query->rgPathInfo) {
+        if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) != DISPLAYCONFIG_PATH_ACTIVE) {
+            continue;
+        }
+        if (IsSameTarget(path, target)) {
+            alreadyActive = true;
+            if (!active) {
+                continue;
+            }
+        }
+        if (hasShareTarget && IsSameTarget(path, shareTarget)) {
+            foundShareSource = true;
+            shareSource = path.sourceInfo.id;
+        }
+        usedSources.push_back(path.sourceInfo.id);
+        next.push_back(WithoutModes(path));
+    }
+
+    if ((active && alreadyActive) || (!active && !alreadyActive)) {
+        return ERROR_SUCCESS;
+    }
+
+    // Never leave Windows with nothing to draw on.
+    if (next.empty() && !active) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    if (active) {
+        BOOL foundPath = false;
+        for (const auto &path : query->rgPathInfo) {
+            if (!IsSameTarget(path, target) || !path.targetInfo.targetAvailable) {
+                continue;
+            }
+            const BOOL sourceInUse = std::find(usedSources.begin(), usedSources.end(), path.sourceInfo.id) != usedSources.end();
+            if (foundShareSource ? path.sourceInfo.id != shareSource : sourceInUse) {
+                continue;
+            }
+            auto copied = WithoutModes(path);
+            copied.targetInfo.scaling = DISPLAYCONFIG_SCALING_PREFERRED;
+            copied.flags = DISPLAYCONFIG_PATH_ACTIVE;
+            next.push_back(copied);
+            foundPath = true;
+            break;
+        }
+        if (!foundPath) {
+            return ERROR_NOT_FOUND;
+        }
+    }
+
+    auto error = SetDisplayConfig(
+        (UINT32)next.size(),
+        next.data(),
+        0,
+        NULL,
+        SDC_APPLY | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES);
+    if (error != ERROR_SUCCESS) {
+        return error;
+    }
+
+    // Windows reloads its saved layout on hot-plug events, so hand back what it
+    // picked to be saved. Otherwise a TV waking up could undo this.
+    auto applied = DoQueryDisplayConfig();
+    if (applied->error != ERROR_SUCCESS) {
+        return applied->error;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> appliedPaths;
+    for (const auto &path : applied->rgPathInfo) {
+        if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) == DISPLAYCONFIG_PATH_ACTIVE) {
+            appliedPaths.push_back(path);
+        }
+    }
+    return SetDisplayConfig(
+        (UINT32)appliedPaths.size(),
+        appliedPaths.data(),
+        (UINT32)applied->rgModeInfo.size(),
+        applied->rgModeInfo.data(),
         SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE);
 }
 
@@ -918,6 +1028,46 @@ Napi::Value Win32ToggleEnabledDisplays(const Napi::CallbackInfo &info) {
     return Napi::Boolean::New(info.Env(), true);
 }
 
+class Win32SetTargetActiveWorker : public Napi::AsyncWorker {
+   public:
+    Win32SetTargetActiveWorker(Napi::Function &callback, struct Win32TransientDeviceId target, BOOL active, BOOL hasShareTarget, struct Win32TransientDeviceId shareTarget)
+        : Napi::AsyncWorker(callback), target(target), active(active), hasShareTarget(hasShareTarget), shareTarget(shareTarget) {}
+
+    void Execute() {
+        this->errorCode = SetTargetActive(this->target, this->active, this->hasShareTarget, this->shareTarget);
+    }
+
+    std::vector<napi_value> GetResult(Napi::Env env) {
+        std::vector<napi_value> result{env.Null(), Napi::Number::New(env, (double)this->errorCode)};
+        return result;
+    }
+
+   private:
+    struct Win32TransientDeviceId target;
+    BOOL active;
+    BOOL hasShareTarget;
+    struct Win32TransientDeviceId shareTarget;
+    LONG errorCode;
+};
+
+Napi::Value Win32SetTargetActive(const Napi::CallbackInfo &info) {
+    if (info.Length() < 4 || !info[3].IsFunction()) {
+        return Napi::Boolean::New(info.Env(), false);
+    }
+
+    struct Win32TransientDeviceId target = {};
+    struct Win32TransientDeviceId shareTarget = {};
+    if (!ExtractTransientDeviceId(info[0], &target)) {
+        return Napi::Boolean::New(info.Env(), false);
+    }
+    const BOOL hasShareTarget = ExtractTransientDeviceId(info[2], &shareTarget);
+
+    auto callback = info[3].As<Napi::Function>();
+    auto worker = new Win32SetTargetActiveWorker(callback, target, (bool)info[1].ToBoolean(), hasShareTarget, shareTarget);
+    worker->Queue();
+    return Napi::Boolean::New(info.Env(), true);
+}
+
 class Win32RestoreDisplayConfigWorker : public Napi::AsyncWorker {
    public:
     Win32RestoreDisplayConfigWorker(Napi::Function &callback, std::shared_ptr<std::vector<struct Win32RestoreDisplayConfigDevice>> configs, BOOL persistent)
@@ -1055,6 +1205,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("win32_queryDisplayConfig", Napi::Function::New(env, Win32QueryDisplayConfig));
     exports.Set("win32_toggleEnabledDisplays", Napi::Function::New(env, Win32ToggleEnabledDisplays));
     exports.Set("win32_restoreDisplayConfig", Napi::Function::New(env, Win32RestoreDisplayConfig));
+    exports.Set("win32_setTargetActive", Napi::Function::New(env, Win32SetTargetActive));
 
     // Take note: while none of these functions are meant to be called directly in JavaScript,
     // these two in particular _depend_ on ordering enforced by JavaScript to function correctly.

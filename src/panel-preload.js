@@ -176,6 +176,10 @@ function turnOffDisplays() {
     }, 111)
 }
 
+function displayControl(command, args) {
+    return ipc.invoke('display-control', { command, args })
+}
+
 function installUpdate() {
     ipc.send('get-update', window.latestVersion)
     ipc.send('clear-update', window.latestVersion.version)
@@ -213,6 +217,14 @@ ipc.on("monitors-updated", (e, monitors) => {
 ipc.on("force-refresh-monitors", (e) => {
     window.allMonitors = {}
     ipc.send('full-refresh', true)
+})
+
+// Display control and network TV state
+ipc.on("display-control-state", (e, state) => {
+    window.displayControl = state
+    window.dispatchEvent(new CustomEvent('displayControlUpdated', {
+        detail: state
+    }))
 })
 
 // Accent colors recieved
@@ -441,6 +453,7 @@ window.sendHeight = sendHeight
 window.panelAnimationDone = panelAnimationDone
 window.setPanelVisibility = setPanelVisibility
 window.turnOffDisplays = turnOffDisplays
+window.sendDisplayControl = displayControl
 window.allMonitors = []
 window.lastUpdate = Date.now()
 window.showPanel = false
