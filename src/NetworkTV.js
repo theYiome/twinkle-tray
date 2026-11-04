@@ -25,6 +25,12 @@ const API_RETRY_MS = [15000, 30000, 60000, 120000, 300000]
 const UNREACHABLE_POLLS_BEFORE_SEARCH = 8
 const SEARCH_INTERVAL_MS = 5 * 60 * 1000
 const VOLUME_HOLD_MS = 2000
+// The TV starts its screen saver after about 5 minutes of a still picture, and only
+// a key press gets rid of it. An arrow key does, and doesn't show anything otherwise.
+const SCREEN_SAVER_KEY = "CursorUp"
+const SCREEN_SAVER_KEY_INTERVAL_MS = 4 * 60 * 1000
+// Sent more than once when the screens return, since the TV may still be settling
+const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
 
 // Turns raw readings into a settled power state. Pure, so the rules that decide
 // when a display gets turned off can be tested without a TV.
@@ -114,6 +120,9 @@ function displayActionFor({ power, autoDisconnect, castSeen, displayActive, disc
 class NetworkTV extends EventEmitter {
     constructor({ getConfig, setConfig, loadCredentials, saveCredentials, displays }) {
         super()
+        this.screensOn = true
+        this.screenSaverTimer = null
+        this.screenSaverWakeTimers = []
         this.getConfig = getConfig
         this.setConfig = setConfig
         this.loadCredentials = loadCredentials
@@ -170,12 +179,17 @@ class NetworkTV extends EventEmitter {
     restartPolling() {
         clearTimeout(this.pollTimer)
         this.pollTimer = null
+        clearInterval(this.screenSaverTimer)
+        this.screenSaverTimer = setInterval(() => this.sendScreenSaverKey(), SCREEN_SAVER_KEY_INTERVAL_MS)
         if (this.isPaired) this.poll()
     }
 
     stop() {
         clearTimeout(this.pollTimer)
         this.pollTimer = null
+        clearInterval(this.screenSaverTimer)
+        this.screenSaverTimer = null
+        this.cancelScreenSaverWakeKeys()
     }
 
     // After the PC sleeps nothing is known about the TV, so don't act on old readings
@@ -206,6 +220,7 @@ class NetworkTV extends EventEmitter {
             wakeOnStartup: !!this.config.wakeOnStartup,
             standbyOnShutdown: !!this.config.standbyOnShutdown,
             followSleep: this.config.followSleep !== false,
+            keepScreenSaverAway: this.config.keepScreenSaverAway !== false,
             disconnectedAutomatically: !!this.config.disconnectedAutomatically,
             canWake: !!this.config.wakeMacs?.length,
             standbyFailure: this.config.standbyFailure ?? null,
@@ -269,6 +284,51 @@ class NetworkTV extends EventEmitter {
         }
 
         if (this.tracker.state === "on" && this.isStateReadDue()) await this.readTVState()
+    }
+
+    // Windows reports one state for all of its displays, which is all there is to go by
+    setScreensOn(on) {
+        const returned = (on && !this.screensOn)
+        this.screensOn = on
+        if (returned) {
+            this.sendScreenSaverWakeKeys()
+        } else if (!on) {
+            this.cancelScreenSaverWakeKeys()
+        }
+    }
+
+    shouldSendScreenSaverKey() {
+        return this.isPaired
+            && this.config.keepScreenSaverAway !== false
+            && this.screensOn
+            && this.tracker.state === "on"
+            // It shouldn't get keys while it's still coming up
+            && !this.wakeAfterSleep
+            && Date.now() >= this.wakingUntil
+            && this.health.state !== "down"
+            && this.health.state !== "unauthorized"
+            // Nothing from this PC is on it, so it's being used for something else
+            && this.status.displayActive !== false
+    }
+
+    async sendScreenSaverKey() {
+        if (!this.shouldSendScreenSaverKey()) return
+        try {
+            await this.sendKey(SCREEN_SAVER_KEY)
+            console.log("NetworkTV: sent the screen saver key")
+        } catch (e) {
+            console.log("NetworkTV: couldn't send the screen saver key:", e.message)
+        }
+    }
+
+    sendScreenSaverWakeKeys() {
+        this.cancelScreenSaverWakeKeys()
+        this.screenSaverWakeTimers = SCREEN_SAVER_WAKE_KEYS_MS.map(delay => setTimeout(() => this.sendScreenSaverKey(), delay))
+    }
+
+    cancelScreenSaverWakeKeys() {
+        this.screenSaverWakeTimers.forEach(timer => clearTimeout(timer))
+        this.screenSaverWakeTimers = []
     }
 
     isStateReadDue(now = Date.now()) {
@@ -543,6 +603,8 @@ class NetworkTV extends EventEmitter {
             console.log("NetworkTV: TV sent to standby for sleep:", sent)
             this.recordStandbyResult(sent, "sleep")
         }
+        // Counts as the screens going off, in case Windows doesn't report that first
+        this.screensOn = false
         this.pause()
     }
 

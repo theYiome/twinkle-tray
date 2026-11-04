@@ -91,6 +91,7 @@ function PairedTV({ T, tv, displays }) {
             <SettingsOption title={T.t("SETTINGS_TV_WAKE_TITLE")} description={T.t("SETTINGS_TV_WAKE_DESC")} tooltip={T.t("SETTINGS_TV_WAKE_TIP")} input={toggle("wakeOnStartup", tv.wakeOnStartup)} />
             <SettingsOption title={T.t("SETTINGS_TV_STANDBY_TITLE")} description={T.t("SETTINGS_TV_STANDBY_DESC")} tooltip={T.t("SETTINGS_TV_STANDBY_TIP")} input={toggle("standbyOnShutdown", tv.standbyOnShutdown)} />
             <SettingsOption title={T.t("SETTINGS_TV_SLEEP_TITLE")} description={T.t("SETTINGS_TV_SLEEP_DESC")} tooltip={T.t("SETTINGS_TV_SLEEP_TIP")} input={toggle("followSleep", tv.followSleep)} />
+            <SettingsOption title={T.t("SETTINGS_TV_SAVER_TITLE")} description={T.t("SETTINGS_TV_SAVER_DESC")} tooltip={T.t("SETTINGS_TV_SAVER_TIP")} input={toggle("keepScreenSaverAway", tv.keepScreenSaverAway)} />
             <SettingsOption title={T.t("SETTINGS_TV_AUTO_TITLE")} description={T.t("SETTINGS_TV_AUTO_DESC")} tooltip={T.t("SETTINGS_TV_AUTO_TIP")} input={toggle("autoDisconnect", tv.autoDisconnect)} />
         </>
     )

@@ -818,35 +818,6 @@ function willPauseMouseEvents(time = 10000) {
 
 
 
-// Analytics
-let analyticsInterval = false
-let analyticsFrequency = 1000 * 60 * 29 // 29 minutes
-let lastAnalyticsPing = 0
-
-function pingAnalytics() {
-  // Skip if too recent
-  if (Date.now() < lastAnalyticsPing + (1000 * 60 * 28)) return false;
-
-  const analytics = require('ga4-mp').createClient("Y1YTliQdTL-moveI0z1TLA", "G-BQ22ZK4BPY", settings.uuid)
-  console.log("\x1b[34mAnalytics:\x1b[0m sending with UUID " + settings.uuid)
-
-  let events = []
-  events.push({
-    name: "page_view",
-    params: {
-      page_location: app.name + "/" + "v" + appVersion + "/" + (appBuild ? appBuild : ""),
-      page_title: app.name + "/" + "v" + appVersion,
-      page_referrer: app.name,
-      os_version: require("os").release(),
-      app_type: app.name,
-      app_version: appVersion,
-      engagement_time_msec: 1
-    }
-  })
-  analytics.send(events)
-  lastAnalyticsPing = Date.now()
-}
-
 let monitors = {}
 let mainWindow;
 let tray = null
@@ -918,7 +889,6 @@ const defaultSettings = {
   dismissedUpdate: '',
   language: "system",
   names: {},
-  analytics: !isDev,
   scrollShortcut: true,
   scrollShortcutAmount: 2,
   scrollFlyoutAmount: 2,
@@ -979,7 +949,6 @@ const defaultSettings = {
   showConsole: false,
   logging: true,
   profiles: [],
-  uuid: uuid(),
   branch: (appVersionTag?.indexOf?.("beta") === 0 ? "beta" : "master"),
   lightSensor: defaultLightSensorSettings,
   networkTV: {},
@@ -1437,19 +1406,6 @@ function processSettings(newSettings = {}, sendUpdate = true) {
     }
     if (newSettings.lightSensor) {
       lightSensor.changeSettings(newSettings.lightSensor);
-    }
-
-    if (settings.analytics) {
-      pingAnalytics()
-      if (analyticsInterval) {
-        clearInterval(analyticsInterval)
-      }
-      analyticsInterval = setInterval(pingAnalytics, analyticsFrequency)
-    } else {
-      analytics = false
-      if (analyticsInterval) {
-        clearInterval(analyticsInterval)
-      }
     }
 
     if (rebuildTray) {
@@ -3708,8 +3664,6 @@ ipcMain.on('pause-updates', pauseMonitorUpdates)
 ipcMain.on('open-url', (event, url) => {
   if (url === "ms-store") {
     require("electron").shell.openExternal("ms-windows-store://pdp/?productid=9PLJWWSV01LK")
-  } else if (url === "privacy-policy") {
-    require("electron").shell.openExternal("https://twinkletray.com/privacy-policy.html")
   } else if (url === "troubleshooting-features") {
     require("electron").shell.openExternal("https://github.com/xanderfrangos/twinkle-tray/wiki/Display-Detection-&-Support-Issues#disabling-monitor-detection-methods-available-in-v1140")
   }
@@ -4039,9 +3993,10 @@ const displayControlCommands = {
   "tv.pairStart": ({ host }) => networkTV.startPairing(host),
   "tv.pairFinish": ({ pin }) => networkTV.finishPairing(pin),
   "tv.forget": () => networkTV.forget(),
-  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown, followSleep }) => {
+  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown, followSleep, keepScreenSaverAway }) => {
     const changes = {}
     if (followSleep !== undefined) changes.followSleep = !!followSleep
+    if (keepScreenSaverAway !== undefined) changes.keepScreenSaverAway = !!keepScreenSaverAway
     if (autoDisconnect !== undefined) changes.autoDisconnect = !!autoDisconnect
     if (wakeOnStartup !== undefined) changes.wakeOnStartup = !!wakeOnStartup
     if (standbyOnShutdown !== undefined) changes.standbyOnShutdown = !!standbyOnShutdown
@@ -4145,6 +4100,7 @@ powerMonitor.on("resume", () => {
 })
 powerMonitor.on("unlock-screen", () => {
   networkTV.handleDisplayOn()
+  networkTV.sendScreenSaverWakeKeys()
   resyncNightLight()
 })
 
@@ -4306,8 +4262,10 @@ function createPanel(toggleOnLoad = false, isRefreshing = false, showOnLoad = tr
       console.log(`Event: ${setting.name || setting.guid} (${setting.data})`)
     }
 
-    if((setting.name === "GUID_CONSOLE_DISPLAY_STATE" || setting.name === "GUID_MONITOR_POWER_ON") && setting.data === 1) {
-      networkTV.handleDisplayOn()
+    if(setting.name === "GUID_CONSOLE_DISPLAY_STATE" || setting.name === "GUID_MONITOR_POWER_ON") {
+      // The console state also has a value for dimmed, which is still on
+      networkTV.setScreensOn(setting.data !== 0)
+      if(setting.data === 1) networkTV.handleDisplayOn()
     }
 
     if(setting.name === "GUID_SESSION_USER_PRESENCE") {
