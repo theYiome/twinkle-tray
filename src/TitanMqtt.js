@@ -199,7 +199,10 @@ function summarizeInfo(info) {
 class TitanMqttClient {
     // getHost is a function since the TV's address can change. log(event, fields) gets
     // what happened, and never credentials.
-    constructor({ getHost, credentials = null, log = () => { }, ca = TITAN_ROOT_CA, port = PORT, lingerMs = LINGER_MS, connectTimeoutMs = CONNECT_TIMEOUT_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS }) {
+    // watchTopics are subscribed to on every connection, and changes to them are logged
+    constructor({ getHost, credentials = null, log = () => { }, ca = TITAN_ROOT_CA, port = PORT, lingerMs = LINGER_MS, connectTimeoutMs = CONNECT_TIMEOUT_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS, watchTopics = [] }) {
+        this.watchTopics = watchTopics
+        this.lastWatched = new Map()
         this.getHost = getHost
         this.credentials = credentials
         this.log = log
@@ -291,6 +294,7 @@ class TitanMqttClient {
                             this.startTimers()
                             this.log("mqtt.connected", { ms: Date.now() - startedAt, anonymous })
                             resolve()
+                            if (!anonymous) this.watch()
                         } else {
                             this.handlePacket(received)
                         }
@@ -312,6 +316,23 @@ class TitanMqttClient {
             this.connecting = null
         })
         return this.connecting
+    }
+
+    // Only what changed is logged, since retained values come again on every connection
+    async watch() {
+        for (const topic of this.watchTopics) {
+            this.messages.set(topic, payload => {
+                const text = payload.toString().slice(0, 300)
+                if (this.lastWatched.get(topic) === text) return
+                this.lastWatched.set(topic, text)
+                this.log("mqtt.state", { topic, payload: text })
+            })
+            try {
+                await this.subscribe(topic)
+            } catch (e) {
+                this.messages.delete(topic)
+            }
+        }
     }
 
     handlePacket(received) {

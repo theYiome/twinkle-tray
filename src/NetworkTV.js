@@ -37,6 +37,10 @@ const SCREEN_SAVER_KEY = "CursorUp"
 // Counted from the last key the TV got from here, of any kind, rather than from when
 // the app started, so restarting the app or waking the PC can't leave a gap.
 const SCREEN_SAVER_KEY_INTERVAL_MS = 3 * 60 * 1000
+// A key doesn't stop the logo coming back when the PC's picture is almost all black,
+// it only clears it, so with the backup link, which doesn't load the API, it's sent
+// often enough that the logo doesn't stay up for long
+const SCREEN_SAVER_KEY_BACKUP_INTERVAL_MS = 60 * 1000
 const SCREEN_SAVER_CHECK_MS = 15 * 1000
 // Sent more than once when the screens return, since the TV may still be settling
 const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
@@ -453,8 +457,13 @@ class NetworkTV extends EventEmitter {
         }
         if (skipped) return
         try {
-            await this.sendKey(SCREEN_SAVER_KEY)
-            console.log("NetworkTV: sent the screen saver key")
+            const { via } = await this.sendKey(SCREEN_SAVER_KEY, { preferBackup: true }) ?? {}
+            if (via !== this.lastScreenSaverVia) {
+                this.note("saver.via", { via })
+                this.lastScreenSaverVia = via
+            }
+            // Every minute over the backup would bury everything else in the session log
+            if (via !== "backup") console.log("NetworkTV: sent the screen saver key")
         } catch (e) {
             console.log("NetworkTV: couldn't send the screen saver key:", e.message)
             this.note("saver.failed", { error: e.message })
@@ -465,7 +474,8 @@ class NetworkTV extends EventEmitter {
     // out as soon as the TV is seen on
     async sendScreenSaverKeyIfDue() {
         // One that's still on its way counts too
-        if (this.sendingScreenSaverKey || Date.now() - (this.lastKeyAt ?? 0) < SCREEN_SAVER_KEY_INTERVAL_MS) return
+        const interval = (this.tv?.hasBackup ? SCREEN_SAVER_KEY_BACKUP_INTERVAL_MS : SCREEN_SAVER_KEY_INTERVAL_MS)
+        if (this.sendingScreenSaverKey || Date.now() - (this.lastKeyAt ?? 0) < interval) return
         this.sendingScreenSaverKey = true
         try {
             await this.sendScreenSaverKey()
@@ -634,7 +644,8 @@ class NetworkTV extends EventEmitter {
             const result = await send(tv, { apiDown: this.apiDown })
             // It tells nothing about the API, unless it's the API that just refused it
             if (result?.via === "backup") {
-                console.log("NetworkTV: sent over the backup link")
+                // Screen saver keys go this way by choice every minute, which isn't news
+                if (result.apiError || this.apiDown) console.log("NetworkTV: sent over the backup link")
                 if (result.apiError) this.noteApiFailure(result.apiError)
                 return result
             }
@@ -1011,10 +1022,11 @@ class NetworkTV extends EventEmitter {
         this.lastKeyAt = Date.now()
     }
 
-    async sendKey(key) {
-        await this.apiCommand((tv, options) => tv.sendKey(key, options))
+    async sendKey(key, { preferBackup = false } = {}) {
+        const result = await this.apiCommand((tv, options) => tv.sendKey(key, { ...options, preferBackup }))
         // Any key keeps the screen saver away, so the next screen saver key can wait
         this.lastKeyAt = Date.now()
+        return result
     }
 
     //

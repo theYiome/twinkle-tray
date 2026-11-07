@@ -27,6 +27,7 @@ const REQUEST_TIMEOUT = 8000
 // only get a short gap, since 700 ms per press made the remote feel slow.
 const MIN_REQUEST_GAP_MS = 700
 const COMMAND_GAP_MS = 100
+const BACKUP_LINGER_MS = 150 * 1000
 
 // Philips' app secret for signing pairing grants. It's the same for every client.
 const PAIRING_KEY = Buffer.from("ZmVay1EQVFOaZhwQ4Kv81ypLAZNczV9sG4KkseXWn1NEk6cXmPKO/MCa9sryslvLCFMnNe4Z4CPXzToowvhHvA==", "base64")
@@ -216,7 +217,9 @@ class PhilipsTV {
     setBackupCredentials(credentials) {
         this.closeBackup()
         this.backupCredentials = credentials ?? null
-        this.backup = (credentials ? this.backupClient(credentials) : null)
+        // Kept open between the screen saver keys, which come every minute, and it
+        // records what the TV reports about itself, to see if it can tell when it's on
+        this.backup = (credentials ? this.backupClient(credentials, { lingerMs: BACKUP_LINGER_MS, watchTopics: ["state/power", "state", "channels/state"], ...this.backupOptions }) : null)
     }
 
     backupClient(credentials, options = {}) {
@@ -369,17 +372,19 @@ class PhilipsTV {
         }
     }
 
-    async routeKey(key, { apiDown = false } = {}) {
+    // preferBackup sends it over the backup link first, for keys sent often enough that
+    // they shouldn't add to the API's load. Only for keys that are safe to send twice.
+    async routeKey(key, { apiDown = false, preferBackup = false } = {}) {
         const code = (Object.hasOwn(KEY_CODES, key) ? KEY_CODES[key] : undefined)
         if (!this.backup || code === undefined) {
             await this.sendKeyOverApi(key)
             return { via: "api" }
         }
 
-        if (apiDown) {
+        if (apiDown || (preferBackup && !TOGGLE_KEYS.has(key))) {
             try {
                 await this.backup.sendKeyCode(code)
-                diagnostics("key", { key, via: "backup", reason: "api down" })
+                if (apiDown) diagnostics("key", { key, via: "backup", reason: "api down" })
                 return { via: "backup" }
             } catch (e) {
                 // A key that only got as far as being unconfirmed may have landed

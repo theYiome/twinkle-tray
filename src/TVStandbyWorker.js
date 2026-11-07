@@ -19,5 +19,5 @@ if (diagnosticsPath) {
 
 // The main thread only waits 3 seconds, and it can't be waiting on the backup that long. A key
 // that may have landed counts as sent, since the TV going off is what's most likely.
-const tv = new PhilipsTV(host, { deviceId, authKey, backup, backupOptions: { connectTimeoutMs: 1200, requestTimeoutMs: 1000 } })
+const tv = new PhilipsTV(host, { deviceId, authKey, backup, backupOptions: { connectTimeoutMs: 1200, requestTimeoutMs: 1000, lingerMs: 2000, watchTopics: [] } })
 tv.standby({ apiDown }).then(() => finish(1), e => finish(e.mayHaveLanded ? 1 : 2))
