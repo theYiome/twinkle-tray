@@ -6,6 +6,7 @@ import TranslateReact from "../TranslateReact"
 import getMonitorName from "../utils/BrightnessPanel/getMonitorName";
 import { usesGammaSlider, isAdjustableDisplay } from "./utilts/monitor.util";
 import BlackoutButton from "./BlackoutButton";
+import { DisplayPowerButton, OffDisplays } from "./DisplayPower";
 import PanelErrorBoundary from "./PanelErrorBoundary";
 
 // An error boundary only catches what its children throw, not what's built for them
@@ -296,17 +297,8 @@ const BrightnessPanel = memo(function BrightnessPanel() {
                 useFeatures = true
                 showHDRSliders = true
               }
-              const powerOff = () => {
-                window.ipc.send("sleep-display", monitor.hwid.join("#"))
-                if (monitor.features?.["0xD6"]) monitor.features["0xD6"][0] = (monitor.features["0xD6"][0] >= 4 ? 1 : settings.ddcPowerOffValue)
-              }
-              const showPowerButton = () => {
-                const customFeatureEnabled = window.settings?.monitorFeaturesSettings?.[monitor?.hwid[1]]?.["0xD6"]
-                const powerButton = (monitorFeatures?.["0xD6"] && (monitor.features?.["0xD6"] || customFeatureEnabled))
-                  ? (<div className="feature-power-icon simple" onClick={powerOff}><span className="icon vfix">&#xE7E8;</span><span>{(monitor.features?.["0xD6"]?.[0] >= 4 ? T.t("PANEL_LABEL_TURN_ON") : T.t("PANEL_LABEL_TURN_OFF"))}</span></div>)
-                  : null
-                return (<>{powerButton}<BlackoutButton T={T} monitorKey={monitor.key} /></>)
-              }
+              // Every display gets the same power button, whatever it supports over DDC/CI
+              const showPowerButton = () => (<><DisplayPowerButton T={T} monitorKey={monitor.key} /><BlackoutButton T={T} monitorKey={monitor.key} /></>)
 
               // Check if it's an HDR display and only supports SDR brightness adjustment.
               const isHDROnlySDR = (monitor.hdr === "active" || monitor.hdr === "supported") && monitor.type === "none" && !usesGammaSlider(monitor);
@@ -389,6 +381,7 @@ const BrightnessPanel = memo(function BrightnessPanel() {
         </div>
       </div>
       {state.sleeping ? (<div></div>) : <PanelErrorBoundary name="its monitors" retryKey={state.monitors}><RenderOnce render={getMonitors} /></PanelErrorBoundary>}
+      {state.sleeping ? null : <PanelErrorBoundary name="turned-off displays"><OffDisplays T={T} /></PanelErrorBoundary>}
       {state.sleeping ? null : <PanelErrorBoundary name="the TV"><NetworkTVCard T={T} /></PanelErrorBoundary>}
       {state.sleeping ? null : <PanelErrorBoundary name="Night Light"><NightLightCard T={T} /></PanelErrorBoundary>}
       <div id="mica">

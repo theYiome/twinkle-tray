@@ -138,7 +138,7 @@ export default function NetworkTVCard({ T }) {
                 </div>
             ) : null}
             {display?.mirroredWith?.length ? <PanelStatus text={T.t("SETTINGS_DISPLAYS_MIRRORED", display.mirroredWith.join(", "))} details={T.t("PANEL_TV_MIRROR_NOTE", display.mirroredWith.join(", "))} /> : null}
-            {tv.autoDisconnect && tv.disconnectedAutomatically ? <PanelStatus text={T.t("PANEL_TV_AUTO_SHORT")} details={T.t("PANEL_TV_AUTO_NOTE")} /> : null}
+            {tv.disconnectedAutomatically ? <PanelStatus text={T.t("PANEL_TV_AUTO_SHORT")} details={T.t("PANEL_TV_AUTO_NOTE")} /> : null}
             {tv.api === "unauthorized" ? <PanelStatus severity="warning" text={T.t("PANEL_TV_UNAUTHORIZED_SHORT")} details={T.t("PANEL_TV_UNAUTHORIZED")} /> : null}
             {isOn && tv.api === "down" ? <PanelStatus severity="warning" text={tv.backupPaired ? T.t("PANEL_TV_USING_BACKUP") : T.t("PANEL_TV_UNAVAILABLE")} details={tv.backupPaired ? T.t("PANEL_TV_USING_BACKUP_NOTE") : T.t("PANEL_TV_API_DOWN")} /> : null}
             {tv.standbyFailure ? (

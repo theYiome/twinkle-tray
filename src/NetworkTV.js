@@ -117,7 +117,8 @@ class ApiHealth {
 // is never acted on, since it's just as likely to be this PC losing its network.
 function displayActionFor({ power, autoDisconnect, castSeen, displayActive, disconnectedAutomatically, waking = false }) {
     if (power === "standby" && !waking && autoDisconnect && castSeen && displayActive) return "disconnect"
-    if (power === "on" && autoDisconnect && disconnectedAutomatically && !displayActive) return "connect"
+    // Whatever took it off the desktop, it comes back with the TV
+    if (power === "on" && disconnectedAutomatically && !displayActive) return "connect"
     return null
 }
 
@@ -177,6 +178,11 @@ class NetworkTV extends EventEmitter {
 
     get isPaired() {
         return !!(this.config.host && this.tv?.deviceId)
+    }
+
+    // On unless turned off, so a TV in standby doesn't leave windows stuck on it
+    get autoDisconnect() {
+        return this.config.autoDisconnect !== false
     }
 
     // 0 turns it off
@@ -258,7 +264,7 @@ class NetworkTV extends EventEmitter {
             host: this.config.host ?? "",
             name: this.config.name ?? "",
             displayPath: this.config.displayPath ?? "",
-            autoDisconnect: !!this.config.autoDisconnect,
+            autoDisconnect: this.autoDisconnect,
             wakeOnStartup: !!this.config.wakeOnStartup,
             standbyOnShutdown: !!this.config.standbyOnShutdown,
             followSleep: this.config.followSleep !== false,
@@ -398,26 +404,39 @@ class NetworkTV extends EventEmitter {
         }
     }
 
+    // Why the screen saver key isn't being sent, or null when it should be
+    screenSaverSkipReason() {
+        if (!this.isPaired) return "not paired"
+        if (this.config.keepScreenSaverAway === false) return "turned off"
+        if (!this.screensOn) return "screens off"
+        if (this.tracker.state !== "on") return `tv ${this.tracker.state}`
+        // It shouldn't get keys while it's still coming up
+        if (this.wakeAfterSleep) return "waiting for the screens to wake it"
+        if (Date.now() < this.wakingUntil) return "tv waking"
+        if (this.apiDown && !this.tv.hasBackup) return "api down"
+        // Nothing from this PC is on it, so it's being used for something else
+        if (this.status.displayActive === false) return "display disconnected"
+        return null
+    }
+
     shouldSendScreenSaverKey() {
-        return this.isPaired
-            && this.config.keepScreenSaverAway !== false
-            && this.screensOn
-            && this.tracker.state === "on"
-            // It shouldn't get keys while it's still coming up
-            && !this.wakeAfterSleep
-            && Date.now() >= this.wakingUntil
-            && (!this.apiDown || !!this.tv.hasBackup)
-            // Nothing from this PC is on it, so it's being used for something else
-            && this.status.displayActive !== false
+        return !this.screenSaverSkipReason()
     }
 
     async sendScreenSaverKey() {
-        if (!this.shouldSendScreenSaverKey()) return
+        // Logged when it changes, so the log shows any stretch without keys and why
+        const skipped = this.screenSaverSkipReason()
+        if (skipped !== (this.lastScreenSaverSkip ?? null)) {
+            this.note("saver", skipped ? { skipped } : { sending: true })
+            this.lastScreenSaverSkip = skipped
+        }
+        if (skipped) return
         try {
             await this.sendKey(SCREEN_SAVER_KEY)
             console.log("NetworkTV: sent the screen saver key")
         } catch (e) {
             console.log("NetworkTV: couldn't send the screen saver key:", e.message)
+            this.note("saver.failed", { error: e.message })
         }
     }
 
@@ -449,12 +468,13 @@ class NetworkTV extends EventEmitter {
 
         const action = displayActionFor({
             power,
-            autoDisconnect: !!this.config.autoDisconnect,
+            autoDisconnect: this.autoDisconnect,
             castSeen: !!this.config.castSeen,
             displayActive: this.status.displayActive === true,
             disconnectedAutomatically: !!this.config.disconnectedAutomatically,
             waking: this.wakeAfterSleep || Date.now() < this.wakingUntil
         })
+        if (action) this.note("display", { connected: action === "connect", reason: `tv ${power}` })
         if (action === "disconnect") {
             await this.setDisplayConnected(false, { automatic: true })
         } else if (action === "connect") {
@@ -820,7 +840,40 @@ class NetworkTV extends EventEmitter {
     }
 
     togglePower() {
-        return this.setPower(this.tracker.state !== "on")
+        return this.setPowerWithDisplay(this.tracker.state !== "on")
+    }
+
+    // Turning the TV off from here also takes it off the desktop, so windows and the
+    // mouse can't end up on a dark screen. It comes back once the TV is seen on.
+    async setPowerWithDisplay(on) {
+        if (on) return this.setPower(true)
+        let standbyError = null
+        try {
+            await this.setPower(false)
+        } catch (e) {
+            // A key that may have landed most likely turned it off
+            if (!e.mayHaveLanded) throw e
+            standbyError = e
+        }
+        await this.detachForStandby()
+        if (standbyError) console.log("NetworkTV: standby may not have reached the TV:", standbyError.message)
+    }
+
+    async detachForStandby() {
+        const devicePath = this.config.displayPath
+        if (!devicePath) return
+        try {
+            const targets = await this.displays.list()
+            const target = targets.find(entry => entry.devicePath === devicePath)
+            if (!target?.active) return
+            // Never take away the last screen
+            if (!targets.some(entry => entry !== target && entry.active)) return
+            await this.setDisplayConnected(false, { automatic: true })
+            this.note("display", { connected: false, reason: "turned off" })
+        } catch (e) {
+            console.log("NetworkTV: couldn't disconnect the TV's display:", e.message)
+            this.note("display.failed", { connected: false, error: e.message })
+        }
     }
 
     // Slider moves arrive faster than the TV can take them, so only the latest counts

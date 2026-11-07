@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -444,6 +445,165 @@ static DISPLAYCONFIG_PATH_INFO WithoutModes(const DISPLAYCONFIG_PATH_INFO &path)
     return copied;
 }
 
+static bool IsActivePath(const DISPLAYCONFIG_PATH_INFO &path) {
+    return (path.flags & DISPLAYCONFIG_PATH_ACTIVE) == DISPLAYCONFIG_PATH_ACTIVE;
+}
+
+static bool HasSourceMode(const DISPLAYCONFIG_PATH_INFO &path, const std::vector<DISPLAYCONFIG_MODE_INFO> &modes) {
+    return path.sourceInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID &&
+           path.sourceInfo.modeInfoIdx < modes.size() &&
+           modes[path.sourceInfo.modeInfoIdx].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+}
+
+// Copies just the modes these paths use, so nothing left over from a removed
+// display goes back to Windows.
+static void CompactModes(std::vector<DISPLAYCONFIG_PATH_INFO> &paths, const std::vector<DISPLAYCONFIG_MODE_INFO> &allModes, std::vector<DISPLAYCONFIG_MODE_INFO> &modes) {
+    std::vector<UINT32> remap(allModes.size(), DISPLAYCONFIG_PATH_MODE_IDX_INVALID);
+    auto keep = [&](UINT32 &index) {
+        if (index == DISPLAYCONFIG_PATH_MODE_IDX_INVALID || index >= allModes.size()) {
+            index = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            return;
+        }
+        if (remap[index] == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+            remap[index] = (UINT32)modes.size();
+            modes.push_back(allModes[index]);
+        }
+        index = remap[index];
+    };
+    for (auto &path : paths) {
+        keep(path.sourceInfo.modeInfoIdx);
+        keep(path.targetInfo.modeInfoIdx);
+    }
+}
+
+// The main display is the one whose desktop starts at 0,0
+static bool FindMainTarget(const std::shared_ptr<struct Win32QueryDisplayConfigResults> &query, struct Win32TransientDeviceId &main) {
+    for (const auto &path : query->rgPathInfo) {
+        if (!IsActivePath(path) || !HasSourceMode(path, query->rgModeInfo)) {
+            continue;
+        }
+        const auto &position = query->rgModeInfo[path.sourceInfo.modeInfoIdx].sourceMode.position;
+        if (position.x == 0 && position.y == 0) {
+            main.adapterId = path.targetInfo.adapterId;
+            main.id = path.targetInfo.id;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Moves every desktop so this source starts at 0,0, which makes it the main display
+static void MakeSourceMain(const std::vector<DISPLAYCONFIG_PATH_INFO> &paths, std::vector<DISPLAYCONFIG_MODE_INFO> &modes, UINT32 mainModeIndex) {
+    const POINTL offset = modes[mainModeIndex].sourceMode.position;
+    std::vector<UINT32> moved;
+    for (const auto &path : paths) {
+        const UINT32 index = path.sourceInfo.modeInfoIdx;
+        if (index == DISPLAYCONFIG_PATH_MODE_IDX_INVALID || index >= modes.size() ||
+            modes[index].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE ||
+            std::find(moved.begin(), moved.end(), index) != moved.end()) {
+            continue;
+        }
+        modes[index].sourceMode.position.x -= offset.x;
+        modes[index].sourceMode.position.y -= offset.y;
+        moved.push_back(index);
+    }
+}
+
+// Turning a display off by handing Windows only the paths that are left makes it
+// reload whatever layout it last saved for those screens, which can move them and
+// make a different one the main display. Handing it the current layout without
+// that display keeps everything else where it is.
+static LONG DetachKeepingLayout(const std::shared_ptr<struct Win32QueryDisplayConfigResults> &query, const struct Win32TransientDeviceId &target) {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    UINT32 removedSourceMode = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    for (const auto &path : query->rgPathInfo) {
+        if (!IsActivePath(path)) {
+            continue;
+        }
+        if (IsSameTarget(path, target)) {
+            if (HasSourceMode(path, query->rgModeInfo)) removedSourceMode = path.sourceInfo.modeInfoIdx;
+            continue;
+        }
+        if (!HasSourceMode(path, query->rgModeInfo) || path.targetInfo.modeInfoIdx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+            // Can't be described as it is, so let Windows lay it out instead
+            return ERROR_INVALID_PARAMETER;
+        }
+        paths.push_back(path);
+    }
+    if (paths.empty() || removedSourceMode == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(query->rgModeInfo.begin(), query->rgModeInfo.end());
+    const auto &removedPosition = modes[removedSourceMode].sourceMode.position;
+    const bool sourceStillShown = std::any_of(paths.begin(), paths.end(), [&](const DISPLAYCONFIG_PATH_INFO &path) {
+        return path.sourceInfo.modeInfoIdx == removedSourceMode;
+    });
+    // It was the main display, so the nearest one that's left takes over
+    if (!sourceStillShown && removedPosition.x == 0 && removedPosition.y == 0) {
+        UINT32 nearest = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        LONGLONG nearestDistance = 0;
+        for (const auto &path : paths) {
+            const auto &position = modes[path.sourceInfo.modeInfoIdx].sourceMode.position;
+            const LONGLONG distance = (LONGLONG)std::abs(position.x) + std::abs(position.y);
+            if (nearest == DISPLAYCONFIG_PATH_MODE_IDX_INVALID || distance < nearestDistance) {
+                nearest = path.sourceInfo.modeInfoIdx;
+                nearestDistance = distance;
+            }
+        }
+        MakeSourceMain(paths, modes, nearest);
+    }
+
+    std::vector<DISPLAYCONFIG_MODE_INFO> used;
+    CompactModes(paths, modes, used);
+    return SetDisplayConfig(
+        (UINT32)paths.size(),
+        paths.data(),
+        (UINT32)used.size(),
+        used.data(),
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+}
+
+// Windows can pick a different main display when one is turned on or off. Puts
+// back the one there was before, if it's still on.
+static LONG RestoreMainDisplay(const struct Win32TransientDeviceId &main) {
+    auto query = DoQueryDisplayConfig();
+    if (query->error != ERROR_SUCCESS) {
+        return query->error;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    UINT32 mainSourceMode = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    for (const auto &path : query->rgPathInfo) {
+        if (!IsActivePath(path)) {
+            continue;
+        }
+        if (!HasSourceMode(path, query->rgModeInfo) || path.targetInfo.modeInfoIdx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+            return ERROR_SUCCESS;
+        }
+        if (IsSameTarget(path, main)) mainSourceMode = path.sourceInfo.modeInfoIdx;
+        paths.push_back(path);
+    }
+    if (mainSourceMode == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+        return ERROR_SUCCESS;
+    }
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(query->rgModeInfo.begin(), query->rgModeInfo.end());
+    const auto &position = modes[mainSourceMode].sourceMode.position;
+    if (position.x == 0 && position.y == 0) {
+        return ERROR_SUCCESS;
+    }
+    MakeSourceMain(paths, modes, mainSourceMode);
+    std::vector<DISPLAYCONFIG_MODE_INFO> used;
+    CompactModes(paths, modes, used);
+    return SetDisplayConfig(
+        (UINT32)paths.size(),
+        paths.data(),
+        (UINT32)used.size(),
+        used.data(),
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+}
+
+static LONG SetTargetActiveByTopology(const std::shared_ptr<struct Win32QueryDisplayConfigResults> &query, const struct Win32TransientDeviceId target, BOOL active, BOOL hasShareTarget, const struct Win32TransientDeviceId shareTarget);
+
 // Turns one display on or off and leaves every other active path alone.
 // ToggleEnabled can't do this: it skips paths without modes, and a display that
 // is off has none, so it can never be turned back on.
@@ -453,6 +613,34 @@ LONG SetTargetActive(const struct Win32TransientDeviceId target, BOOL active, BO
         return query->error;
     }
 
+    struct Win32TransientDeviceId main = {};
+    const bool hadMain = FindMainTarget(query, main);
+    const bool turningOffMain = hadMain && !active && main.adapterId.LowPart == target.adapterId.LowPart &&
+                                main.adapterId.HighPart == target.adapterId.HighPart && main.id == target.id;
+
+    if (!active) {
+        const bool isActive = std::any_of(query->rgPathInfo.begin(), query->rgPathInfo.end(), [&](const DISPLAYCONFIG_PATH_INFO &path) {
+            return IsActivePath(path) && IsSameTarget(path, target);
+        });
+        if (!isActive) {
+            return ERROR_SUCCESS;
+        }
+        if (DetachKeepingLayout(query, target) == ERROR_SUCCESS) {
+            return ERROR_SUCCESS;
+        }
+    }
+
+    auto error = SetTargetActiveByTopology(query, target, active, hasShareTarget, shareTarget);
+    if (error != ERROR_SUCCESS || !hadMain || turningOffMain) {
+        return error;
+    }
+    // Not being able to put the main display back isn't worth failing over, since
+    // the display did change the way it was asked to
+    RestoreMainDisplay(main);
+    return ERROR_SUCCESS;
+}
+
+static LONG SetTargetActiveByTopology(const std::shared_ptr<struct Win32QueryDisplayConfigResults> &query, const struct Win32TransientDeviceId target, BOOL active, BOOL hasShareTarget, const struct Win32TransientDeviceId shareTarget) {
     std::vector<DISPLAYCONFIG_PATH_INFO> next;
     std::vector<UINT32> usedSources;
     BOOL alreadyActive = false;

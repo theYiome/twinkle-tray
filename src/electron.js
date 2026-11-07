@@ -3991,6 +3991,22 @@ async function setDisplayActive(key, active, extend = false) {
   await refreshDisplayControl()
 }
 
+// The same for every screen: off takes it off the desktop, so windows and the mouse
+// can't go there. A monitor goes to sleep by itself without a signal, and the TV
+// also goes to standby.
+async function setDisplayPower(key, on) {
+  const target = requireDisplayTarget(key)
+  if (target.devicePath === settings.networkTV?.displayPath && networkTV.isPaired) {
+    await networkTV.setPowerWithDisplay(on)
+  } else {
+    if (!on && target.active && !displayTargets.some(entry => entry !== target && entry.active)) {
+      throw Object.assign(new Error(`${target.displayName || "That display"} is the only screen that's on.`), { status: 400 })
+    }
+    await w32disp.setDisplayActive({ devicePath: target.devicePath, active: on })
+  }
+  await refreshDisplayControl()
+}
+
 function moveWindowsOffDisplay(key) {
   const target = requireDisplayTarget(key)
   const from = targetBounds(target)
@@ -4081,7 +4097,7 @@ const displayControlCommands = {
     if (screensOffStandbyMinutes !== undefined) networkTV.startScreensOffTimer()
     return networkTV.readDisplay()
   },
-  "tv.power": ({ on }) => networkTV.setPower(!!on),
+  "tv.power": ({ on }) => networkTV.setPowerWithDisplay(!!on),
   "tv.togglePower": () => networkTV.togglePower(),
   "tv.volume": ({ level }) => networkTV.setVolume(level),
   "tv.toggleMute": () => networkTV.toggleMute(),
@@ -4098,6 +4114,7 @@ const displayControlCommands = {
   "tv.dismissStandbyFailure": () => networkTV.clearStandbyFailure(),
   "tv.key": ({ key }) => sendTVKey(key),
   "display.setActive": ({ key, active, extend }) => setDisplayActive(key, !!active, !!extend),
+  "display.power": ({ key, on }) => setDisplayPower(key, !!on),
   "display.moveWindows": ({ key }) => moveWindowsOffDisplay(key),
   "display.dim": ({ key, level }) => setDisplayDim(key, level),
   "display.blackout": ({ key, on }) => setDisplayBlackout(key, !!on),
@@ -4154,6 +4171,7 @@ const localAPI = new LocalAPI({
     "POST /tv/key": ({ key }) => sendTVKey(key),
     "POST /displays/:key/connect": (body, { key }) => setDisplayActive(key, true, !!body.extend),
     "POST /displays/:key/disconnect": (body, { key }) => setDisplayActive(key, false),
+    "POST /displays/:key/power": ({ on }, { key }) => setDisplayPower(key, !!on),
     "POST /displays/:key/move-windows": (body, { key }) => moveWindowsOffDisplay(key),
     "POST /displays/:key/dim": ({ level }, { key }) => setDisplayDim(key, level),
     "POST /displays/:key/blackout": ({ on }, { key }) => setDisplayBlackout(key, !!on),
