@@ -23,7 +23,10 @@ const CAST_INFO_PORT = 8008
 const REQUEST_TIMEOUT = 8000
 // The TV's API server is reported to lock up under bursts of requests, until it's
 // unplugged. It closes every connection, so spacing requests out is what's left.
+// That's for the app's own reads. Commands someone is waiting on, like a remote button,
+// only get a short gap, since 700 ms per press made the remote feel slow.
 const MIN_REQUEST_GAP_MS = 700
+const COMMAND_GAP_MS = 100
 
 // Philips' app secret for signing pairing grants. It's the same for every client.
 const PAIRING_KEY = Buffer.from("ZmVay1EQVFOaZhwQ4Kv81ypLAZNczV9sG4KkseXWn1NEk6cXmPKO/MCa9sryslvLCFMnNe4Z4CPXzToowvhHvA==", "base64")
@@ -130,11 +133,11 @@ function rawRequest(host, method, path, body, headers = {}, timeout = REQUEST_TI
 
 // Everything sent to a TV goes through here, one call at a time
 const requestQueues = new Map()
-function runInTurn(host, call) {
+function runInTurn(host, call, gap = MIN_REQUEST_GAP_MS) {
     if (!requestQueues.has(host)) requestQueues.set(host, { last: Promise.resolve(), doneAt: 0 })
     const queue = requestQueues.get(host)
     const turn = queue.last.then(async () => {
-        const wait = queue.doneAt + MIN_REQUEST_GAP_MS - Date.now()
+        const wait = queue.doneAt + gap - Date.now()
         if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
         try {
             return await call()
@@ -273,7 +276,7 @@ class PhilipsTV {
     }
 
     request(method, endpoint, body, options) {
-        return runInTurn(this.host, () => this.send(method, endpoint, body, options))
+        return runInTurn(this.host, () => this.send(method, endpoint, body, options), (method === "GET" ? MIN_REQUEST_GAP_MS : COMMAND_GAP_MS))
     }
 
     async send(method, endpoint, body, { auth = true, timeout, deviceId = this.deviceId, authKey = this.authKey } = {}) {

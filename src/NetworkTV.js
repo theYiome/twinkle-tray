@@ -34,7 +34,10 @@ const VOLUME_HOLD_MS = 2000
 // The TV starts its screen saver after about 5 minutes of a still picture, and only
 // a key press gets rid of it. An arrow key does, and doesn't show anything otherwise.
 const SCREEN_SAVER_KEY = "CursorUp"
-const SCREEN_SAVER_KEY_INTERVAL_MS = 4 * 60 * 1000
+// Counted from the last key the TV got from here, of any kind, rather than from when
+// the app started, so restarting the app or waking the PC can't leave a gap.
+const SCREEN_SAVER_KEY_INTERVAL_MS = 3 * 60 * 1000
+const SCREEN_SAVER_CHECK_MS = 15 * 1000
 // Sent more than once when the screens return, since the TV may still be settling
 const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
 const SCREENS_OFF_DEFAULT_MINUTES = 5
@@ -218,7 +221,7 @@ class NetworkTV extends EventEmitter {
         clearTimeout(this.pollTimer)
         this.pollTimer = null
         clearInterval(this.screenSaverTimer)
-        this.screenSaverTimer = setInterval(() => this.sendScreenSaverKey(), SCREEN_SAVER_KEY_INTERVAL_MS)
+        this.screenSaverTimer = setInterval(() => this.sendScreenSaverKeyIfDue(), SCREEN_SAVER_CHECK_MS)
         clearInterval(this.diagnosticsTimer)
         this.diagnosticsTimer = setInterval(() => this.logSnapshot("timer"), DIAGNOSTICS_EVERY_MS)
         if (this.isPaired) this.poll()
@@ -455,6 +458,19 @@ class NetworkTV extends EventEmitter {
         } catch (e) {
             console.log("NetworkTV: couldn't send the screen saver key:", e.message)
             this.note("saver.failed", { error: e.message })
+        }
+    }
+
+    // Nothing is known about keys from before the app started, so the first one goes
+    // out as soon as the TV is seen on
+    async sendScreenSaverKeyIfDue() {
+        // One that's still on its way counts too
+        if (this.sendingScreenSaverKey || Date.now() - (this.lastKeyAt ?? 0) < SCREEN_SAVER_KEY_INTERVAL_MS) return
+        this.sendingScreenSaverKey = true
+        try {
+            await this.sendScreenSaverKey()
+        } finally {
+            this.sendingScreenSaverKey = false
         }
     }
 
@@ -970,6 +986,7 @@ class NetworkTV extends EventEmitter {
 
     async toggleMute() {
         await this.apiCommand((tv, options) => tv.sendKey("Mute", options))
+        this.lastKeyAt = Date.now()
         // During an outage it can't be read, so it isn't guessed at
         if (this.status.muted !== null) this.setStatus({ muted: !this.status.muted })
     }
@@ -991,10 +1008,13 @@ class NetworkTV extends EventEmitter {
 
     async pressButton(button) {
         await this.apiCommand((tv, options) => tv.pressButton(button, options))
+        this.lastKeyAt = Date.now()
     }
 
     async sendKey(key) {
         await this.apiCommand((tv, options) => tv.sendKey(key, options))
+        // Any key keeps the screen saver away, so the next screen saver key can wait
+        this.lastKeyAt = Date.now()
     }
 
     //
