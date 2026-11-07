@@ -1,13 +1,15 @@
 import React from "react"
 
-export default function IconButton({ icon, label, onClick, active = false, disabledReason = false }) {
+export default function IconButton({ icon, label, onClick, active = false, expanded, disabledReason = false }) {
     const disabled = !!disabledReason
     return (
         <button
             type="button"
             className="tv-button"
             aria-label={label}
-            aria-pressed={active}
+            aria-pressed={expanded === undefined ? active : undefined}
+            aria-expanded={expanded}
+            data-on={active || undefined}
             aria-disabled={disabled}
             title={disabled && disabledReason !== true ? `${label}: ${disabledReason}` : label}
             onClick={disabled ? undefined : onClick}>

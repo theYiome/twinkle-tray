@@ -5,8 +5,7 @@ import HDRSliders from "./HDRSliders";
 import TranslateReact from "../TranslateReact"
 import getMonitorName from "../utils/BrightnessPanel/getMonitorName";
 import { usesGammaSlider, isAdjustableDisplay } from "./utilts/monitor.util";
-import BlackoutButton from "./BlackoutButton";
-import { DisplayPowerButton, OffDisplays } from "./DisplayPower";
+import { DisplayActions, OffDisplays } from "./DisplayPower";
 import PanelErrorBoundary from "./PanelErrorBoundary";
 
 // An error boundary only catches what its children throw, not what's built for them
@@ -298,7 +297,7 @@ const BrightnessPanel = memo(function BrightnessPanel() {
                 showHDRSliders = true
               }
               // Every display gets the same power button, whatever it supports over DDC/CI
-              const showPowerButton = () => (<><DisplayPowerButton T={T} monitorKey={monitor.key} /><BlackoutButton T={T} monitorKey={monitor.key} /></>)
+              const showPowerButton = () => (<DisplayActions T={T} monitorKey={monitor.key} />)
 
               // Check if it's an HDR display and only supports SDR brightness adjustment.
               const isHDROnlySDR = (monitor.hdr === "active" || monitor.hdr === "supported") && monitor.type === "none" && !usesGammaSlider(monitor);

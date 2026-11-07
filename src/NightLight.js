@@ -189,8 +189,12 @@ function readFields(payload) {
     while (true) {
         const start = reader.pos
         const field = reader.readFieldHeader()
-        // Fields of a base struct would need more care than this needs to handle
-        if (field.stopBase) throw new Error("Unrecognized Night Light data")
+        // The per-device copies end their fields with an end-of-base marker. Anything
+        // after it would be a derived struct's fields, which this doesn't handle.
+        if (field.stopBase) {
+            if (!reader.readFieldHeader().stop) throw new Error("Unrecognized Night Light data")
+            return { fields, stopAt: start }
+        }
         if (field.stop) return { fields, stopAt: start }
         const valueStart = reader.pos
         reader.skipValue(field.type)
@@ -303,8 +307,7 @@ class NightLight extends EventEmitter {
         this.root = root
         this.commitDelay = commitDelay
         this.log = log
-        this.statePath = `${root}\\default$${STATE_NAME}\\${STATE_NAME}`
-        this.settingsPath = `${root}\\default$${SETTINGS_NAME}\\${SETTINGS_NAME}`
+        this.mainCopy = this.copyPaths("default", "")
         this.queue = Promise.resolve()
         this.commitTimer = null
         this.kelvinBeforeDrag = null
@@ -337,35 +340,53 @@ class NightLight extends EventEmitter {
         }
     }
 
-    readBuffers() {
-        const state = this.readValue(this.statePath)
-        const settings = this.readValue(this.settingsPath)
-        return (state && settings ? { state, settings } : null)
+    copyPaths(prefix, suffix) {
+        return {
+            state: `${this.root}\\${prefix}$${STATE_NAME}${suffix}\\${STATE_NAME}${suffix}`,
+            settings: `${this.root}\\${prefix}$${SETTINGS_NAME}${suffix}\\${SETTINGS_NAME}${suffix}`
+        }
     }
 
-    // Newer Windows builds can also keep a per-device copy, which isn't changed here
-    hasPerDeviceCopy() {
+    // Newer Windows builds also keep per-device copies, under a key named after the
+    // device's ID, and may use either one, so all of them get changed
+    perDeviceCopies() {
         try {
             const key = this.reg.openKey(this.reg.HKCU, this.root, this.reg.Access.READ)
-            if (!key) return false
+            if (!key) return []
             try {
-                return this.reg.enumKeyNames(key).some(name => /bluelightreduction.*perdevice/i.test(name))
+                const suffix = `$${STATE_NAME}perdevice`
+                return this.reg.enumKeyNames(key)
+                    .filter(name => name.toLowerCase().endsWith(suffix) && name.length > suffix.length)
+                    .map(name => this.copyPaths(name.slice(0, -suffix.length), "perdevice"))
             } finally {
                 this.reg.closeKey(key)
             }
         } catch (e) {
-            return false
+            return []
         }
+    }
+
+    // Every copy that's there, each with its own paths. A per-device one comes first,
+    // as it's the one read back.
+    readCopies() {
+        const found = []
+        for (const copy of [...this.perDeviceCopies(), this.mainCopy]) {
+            const state = this.readValue(copy.state)
+            const settings = this.readValue(copy.settings)
+            if (state && settings) found.push({ ...copy, buffers: { state, settings } })
+        }
+        return found
     }
 
     readStatus() {
         const unavailable = reason => ({ supported: false, on: false, level: 0, scheduleEnabled: false, reason, perDevice: false })
-        const buffers = this.readBuffers()
-        if (!buffers) return unavailable("missing")
+        const copies = this.readCopies()
+        if (!copies.length) return unavailable("missing")
         try {
-            const { on } = readState(buffers.state)
-            const { kelvin, scheduleEnabled } = readSettings(buffers.settings)
-            return { supported: true, on, level: (on ? Math.max(1, kelvinToLevel(kelvin)) : 0), scheduleEnabled, reason: null, perDevice: this.hasPerDeviceCopy() }
+            // A copy that can't be read can't be changed either, so then none are
+            const parsed = copies.map(({ buffers }) => ({ ...readState(buffers.state), ...readSettings(buffers.settings) }))
+            const { on, kelvin, scheduleEnabled } = parsed[0]
+            return { supported: true, on, level: (on ? Math.max(1, kelvinToLevel(kelvin)) : 0), scheduleEnabled, reason: null, perDevice: false }
         } catch (e) {
             this.log("Night Light data isn't in a recognized format, so it won't be changed:", e.message)
             return unavailable("format")
@@ -429,16 +450,17 @@ class NightLight extends EventEmitter {
     }
 
     applyPreview(level) {
-        const buffers = this.readBuffers()
-        if (!buffers) throw new Error("Night Light's settings couldn't be read.")
-        const settings = readSettings(buffers.settings)
-        const state = readState(buffers.state)
-        if (this.kelvinBeforeDrag === null) this.kelvinBeforeDrag = settings.kelvin
+        const copies = this.readCopies()
+        if (!copies.length) throw new Error("Night Light's settings couldn't be read.")
+        const parsed = copies.map(copy => ({ copy, settings: readSettings(copy.buffers.settings), state: readState(copy.buffers.state) }))
+        if (this.kelvinBeforeDrag === null) this.kelvinBeforeDrag = parsed[0].settings.kelvin
         // 0 has no temperature to show, and gets dealt with when the drag is saved
         if (level === 0) return
-        this.writeValue(this.settingsPath, patchSettings(buffers.settings, { kelvin: levelToKelvin(level), preview: true }))
-        // Windows only previews while Night Light is on
-        if (!state.on) this.writeValue(this.statePath, patchState(buffers.state, true))
+        for (const { copy, state } of parsed) {
+            this.writeValue(copy.settings, patchSettings(copy.buffers.settings, { kelvin: levelToKelvin(level), preview: true }))
+            // Windows only previews while Night Light is on
+            if (!state.on) this.writeValue(copy.state, patchState(copy.buffers.state, true))
+        }
     }
 
     applyLevel(level) {
@@ -447,25 +469,31 @@ class NightLight extends EventEmitter {
         const restoreKelvin = (level === 0 && this.kelvinBeforeDrag !== null ? this.kelvinBeforeDrag : undefined)
 
         for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
-            const buffers = this.readBuffers()
-            if (!buffers) throw new Error("Night Light's settings couldn't be read.")
-            const state = readState(buffers.state)
-            const settings = readSettings(buffers.settings)
+            const copies = this.readCopies()
+            if (!copies.length) throw new Error("Night Light's settings couldn't be read.")
+            const writes = copies.map(({ buffers, state: statePath, settings: settingsPath }) => {
+                const state = readState(buffers.state)
+                const settings = readSettings(buffers.settings)
+                let newSettings = null
+                if (level > 0) {
+                    newSettings = patchSettings(buffers.settings, { kelvin: levelToKelvin(level), preview: false })
+                } else if (settings.previewing || restoreKelvin !== undefined) {
+                    newSettings = patchSettings(buffers.settings, { kelvin: restoreKelvin, preview: false })
+                }
+                const newState = (state.on !== (level > 0) ? patchState(buffers.state, level > 0) : null)
+                return { statePath, settingsPath, newSettings, newState }
+            })
 
-            let newSettings = null
-            if (level > 0) {
-                newSettings = patchSettings(buffers.settings, { kelvin: levelToKelvin(level), preview: false })
-            } else if (settings.previewing || restoreKelvin !== undefined) {
-                newSettings = patchSettings(buffers.settings, { kelvin: restoreKelvin, preview: false })
+            // If Windows changed any of them in the meantime, start over from its version
+            const latest = this.readCopies()
+            const unchanged = latest.length === copies.length && latest.every((copy, i) =>
+                copy.buffers.state.equals(copies[i].buffers.state) && copy.buffers.settings.equals(copies[i].buffers.settings))
+            if (!unchanged) continue
+
+            for (const { statePath, settingsPath, newSettings, newState } of writes) {
+                if (newSettings) this.writeValue(settingsPath, newSettings)
+                if (newState) this.writeValue(statePath, newState)
             }
-            const newState = (state.on !== (level > 0) ? patchState(buffers.state, level > 0) : null)
-
-            // If Windows changed either one in the meantime, start over from its version
-            const latest = this.readBuffers()
-            if (!latest || !latest.state.equals(buffers.state) || !latest.settings.equals(buffers.settings)) continue
-
-            if (newSettings) this.writeValue(this.settingsPath, newSettings)
-            if (newState) this.writeValue(this.statePath, newState)
 
             const status = this.readStatus()
             if (status.supported && status.on === (level > 0) && status.level === level) {
@@ -479,16 +507,17 @@ class NightLight extends EventEmitter {
     // A crash mid-drag would otherwise leave the preview flag behind
     clearPreview() {
         return this.enqueue(() => {
-            const buffers = this.readBuffers()
-            if (!buffers) return false
-            try {
-                if (!readSettings(buffers.settings).previewing) return false
-                this.writeValue(this.settingsPath, patchSettings(buffers.settings, { preview: false }))
-                return true
-            } catch (e) {
-                this.log("Couldn't clear the Night Light preview:", e.message)
-                return false
+            let cleared = false
+            for (const { settings, buffers } of this.readCopies()) {
+                try {
+                    if (!readSettings(buffers.settings).previewing) continue
+                    this.writeValue(settings, patchSettings(buffers.settings, { preview: false }))
+                    cleared = true
+                } catch (e) {
+                    this.log("Couldn't clear the Night Light preview:", e.message)
+                }
             }
+            return cleared
         })
     }
 }

@@ -275,7 +275,7 @@ body[data-is-win11="false"] #root {
             white-space: nowrap;
         }
 
-        .feature-power-icon, .monitor-blackout, .feature-icon, .feature-row + .feature-row, .monitor-sliders.extended + .monitor-sliders.extended:before {
+        .feature-power-icon, .display-actions, .feature-icon, .feature-row + .feature-row, .monitor-sliders.extended + .monitor-sliders.extended:before {
             display: none;
         }
 
@@ -475,20 +475,156 @@ $card-gap: 8px;
         font-size: 13px;
     }
 
-    .monitor-blackout {
-        margin-left: $card-gap;
+    .tv-sheet {
+        margin: $card-gap 0 0 $card-icon-column;
+        padding: 10px;
+        border-radius: 6px;
+        background: rgba(128, 128, 128, 0.1);
+    }
+
+    .tv-sheet-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .ambilight-group {
+        margin-top: 10px;
+    }
+
+    .ambilight-group-label {
+        font-size: 11px;
+        opacity: 0.7;
+        margin-bottom: 5px;
+    }
+
+    .ambilight-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+
+    .ambilight-chip {
+        padding: 4px 9px;
+        border: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 12px;
+        background: transparent;
+        color: var(--tray-text);
+        font: inherit;
+        font-size: 12px;
+        line-height: 1.3;
+        cursor: pointer;
+
+        &:hover {
+            background: rgba(128, 128, 128, 0.2);
+        }
+
+        &:focus-visible {
+            outline: 2px solid var(--tray-text);
+            outline-offset: 1px;
+        }
+
+        &[aria-pressed="true"] {
+            border-color: transparent;
+            background: var(--system-accent-dark1);
+            color: white;
+
+            @media screen and (prefers-color-scheme: dark) {
+                background: var(--system-accent-light2);
+                color: black;
+            }
+        }
+    }
+
+    .tv-switch {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: var(--tray-text);
+        font: inherit;
+        font-size: 12px;
+        font-weight: normal;
+        cursor: pointer;
+
+        &:focus-visible {
+            outline: 2px solid var(--tray-text);
+            outline-offset: 2px;
+        }
+    }
+
+    .tv-switch-track {
+        position: relative;
+        width: 36px;
+        height: 18px;
+        border: 1px solid var(--tray-text);
+        border-radius: 10px;
+        opacity: 0.85;
+    }
+
+    .tv-switch-thumb {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--tray-text);
+        transition: left 0.15s;
+    }
+
+    .tv-switch[aria-checked="true"] {
+        .tv-switch-track {
+            border-color: transparent;
+            background: var(--system-accent-dark1);
+            opacity: 1;
+
+            @media screen and (prefers-color-scheme: dark) {
+                background: var(--system-accent-light2);
+            }
+        }
+
+        .tv-switch-thumb {
+            left: 21px;
+            background: white;
+
+            @media screen and (prefers-color-scheme: dark) {
+                background: black;
+            }
+        }
+    }
+
+    // The volume row's icon is the mute button
+    .feature-icon .tv-button {
+        width: 28px;
+        height: 28px;
+        margin: -4px 0;
     }
 }
 
-.monitor-blackout {
-    margin-left: auto;
+// The same buttons at the end of every display's name. Negative margins keep
+// the name row the height it was.
+.display-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin: -4px -4px -4px auto;
+
+    .panel-card-state + & {
+        margin-left: 6px;
+    }
 
     .tv-button {
-        width: 24px;
-        height: 24px;
+        width: 26px;
+        height: 26px;
+        border-radius: 4px;
 
         span.icon {
-            font-size: 13px !important;
+            font-size: 14px !important;
         }
     }
 }
@@ -520,7 +656,11 @@ $card-gap: 8px;
             outline-offset: 1px;
         }
 
-        &[aria-pressed="true"] {
+        &[aria-expanded="true"] {
+            background: rgba(128, 128, 128, 0.2);
+        }
+
+        &[aria-pressed="true"], &[data-on] {
             background: var(--system-accent-dark1);
             color: white;
 

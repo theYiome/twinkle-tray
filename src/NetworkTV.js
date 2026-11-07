@@ -8,6 +8,13 @@ const { Worker } = require("worker_threads")
 const { PhilipsTV, wakeOnLan, discover, AMBILIGHT_STYLES, ambilightStyleId } = require("./PhilipsTV")
 
 const POLL_MS = 4000
+// While the TV is changing because of something sent from here, it's checked more
+// often, so the panel and the display follow it as soon as it's done. These are
+// bare connection attempts, not API requests.
+const POLL_CHANGING_MS = 1500
+// How long a change sent from here is waited on before going back to what's seen.
+// The Cast port stays open for about 15 seconds after standby.
+const TURN_OFF_WAIT_MS = 45000
 // Volume and Ambilight cost an HTTPS connection each per read, since the TV closes
 // every one. Only an open panel needs them to be current.
 const STATE_READ_MS = 45000
@@ -49,13 +56,20 @@ class PowerTracker {
         this.pendingCount = 0
     }
 
-    // Returns the new state if it changed, otherwise null
-    update({ apiReachable, castOpen }) {
+    // Returns the new state if it changed, otherwise null. A reading that matches what
+    // was just asked of the TV doesn't need confirming.
+    update({ apiReachable, castOpen, expected = null }) {
         const reading = (castOpen ? "on" : (apiReachable ? "standby" : "unreachable"))
         if (reading === this.state) {
             this.pending = null
             this.pendingCount = 0
             return null
+        }
+        if (reading === expected) {
+            this.state = reading
+            this.pending = null
+            this.pendingCount = 0
+            return reading
         }
         if (reading !== this.pending) {
             this.pending = reading
@@ -168,6 +182,8 @@ class NetworkTV extends EventEmitter {
             ambilightStyle: null,
             displayActive: null,
             mirrored: false,
+            // "on" or "off" while a change sent from here is under way
+            changing: null,
             api: "unknown"
         }
     }
@@ -300,7 +316,7 @@ class NetworkTV extends EventEmitter {
             this.logOnChange("poll", `poll failed: ${e.message}`)
         }
         this.polling = false
-        if (this.isPaired) this.pollTimer = setTimeout(() => this.poll(), POLL_MS)
+        if (this.isPaired) this.pollTimer = setTimeout(() => this.poll(), (this.status.changing ? POLL_CHANGING_MS : POLL_MS))
     }
 
     // For failures that repeat on every poll. Pass null once it's working again.
@@ -319,7 +335,9 @@ class NetworkTV extends EventEmitter {
 
         if (castOpen && !this.config.castSeen) this.setConfig({ castSeen: true })
 
-        const power = this.tracker.update({ apiReachable, castOpen })
+        this.expireChange()
+        const expected = { on: "on", off: "standby" }[this.status.changing] ?? null
+        const power = this.tracker.update({ apiReachable, castOpen, expected })
         if (power) await this.handlePowerChange(power)
 
         // The TV never came up, so treat it as the standby that it is
@@ -457,10 +475,36 @@ class NetworkTV extends EventEmitter {
         return now >= this.lastStateRead + interval
     }
 
+    // Shown in the panel right away, since the TV takes a while to look any different
+    startChange(change) {
+        this.changeUntil = Date.now() + (change === "on" ? WAKE_GRACE_MS : TURN_OFF_WAIT_MS)
+        this.changeStartedAt = Date.now()
+        this.setStatus({ changing: change })
+        // Checked sooner than the next regular poll
+        if (this.isPaired && !this.polling) {
+            clearTimeout(this.pollTimer)
+            this.pollTimer = setTimeout(() => this.poll(), POLL_CHANGING_MS)
+        }
+    }
+
+    expireChange() {
+        if (this.status.changing && Date.now() > this.changeUntil) {
+            this.note("power.change.timeout", { changing: this.status.changing, power: this.tracker.state })
+            this.wakeWhenOff = false
+            this.setStatus({ changing: null })
+        }
+    }
+
     async handlePowerChange(power) {
         console.log(`NetworkTV: TV is now ${power}`)
-        this.note("power", { power })
-        this.setStatus({ power })
+        const finished = { on: "on", off: "standby" }[this.status.changing] === power
+        this.note("power", { power, ...(finished ? { afterMs: Date.now() - this.changeStartedAt } : {}) })
+        this.setStatus({ power, ...(finished ? { changing: null } : {}) })
+        // Turned on again while it was still going off
+        if (power === "standby" && this.wakeWhenOff) {
+            this.wakeWhenOff = false
+            this.setPower(true).catch(e => console.log("NetworkTV: couldn't wake the TV:", e.message))
+        }
         if (power === "on") {
             this.wakingUntil = 0
             this.readStateSoon()
@@ -742,9 +786,18 @@ class NetworkTV extends EventEmitter {
             if (!macs.length) throw new Error("The TV didn't report a network adapter with Wake-on-LAN turned on.")
             this.wokeByApp = true
             this.wakingUntil = Date.now() + WAKE_GRACE_MS
+            if (!this.status.changing) this.startChange("on")
+            this.note("power.send", { on: true })
             await wakeOnLan(macs, tv.host)
         } else {
-            await this.apiCommand((tv, options) => tv.standby(options))
+            this.startChange("off")
+            this.note("power.send", { on: false })
+            try {
+                await this.apiCommand((tv, options) => tv.standby(options))
+            } catch (e) {
+                if (!e.mayHaveLanded) this.setStatus({ changing: null })
+                throw e
+            }
             this.clearStandbyFailure()
         }
     }
@@ -839,14 +892,32 @@ class NetworkTV extends EventEmitter {
         return Atomics.load(done, 0) === 1
     }
 
+    // Goes by what was last asked for, since the TV takes a while to show it. Sending
+    // standby twice would turn it back on, as it's the same key.
+    get isOnOrTurningOn() {
+        if (this.status.changing) return this.status.changing === "on"
+        return this.tracker.state === "on"
+    }
+
     togglePower() {
-        return this.setPowerWithDisplay(this.tracker.state !== "on")
+        return this.setPowerWithDisplay(!this.isOnOrTurningOn)
     }
 
     // Turning the TV off from here also takes it off the desktop, so windows and the
     // mouse can't end up on a dark screen. It comes back once the TV is seen on.
     async setPowerWithDisplay(on) {
-        if (on) return this.setPower(true)
+        if (on) {
+            if (this.status.changing === "on") return
+            // A wake doesn't do anything until it's finished going off
+            if (this.status.changing === "off") {
+                this.wakeWhenOff = true
+                this.startChange("on")
+                return
+            }
+            return this.setPower(true)
+        }
+        this.wakeWhenOff = false
+        if (this.status.changing === "off") return
         let standbyError = null
         try {
             await this.setPower(false)

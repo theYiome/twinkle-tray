@@ -293,7 +293,6 @@ function Layouts({ T, layouts }) {
 function NightLightSettings({ T, nightLight }) {
     const notes = []
     if (!nightLight.supported) notes.push({ text: T.t("SETTINGS_NIGHT_LIGHT_UNAVAILABLE_SHORT"), tooltip: T.t("SETTINGS_NIGHT_LIGHT_UNAVAILABLE") })
-    if (nightLight.perDevice) notes.push({ text: T.t("SETTINGS_NIGHT_LIGHT_PER_DEVICE_SHORT"), tooltip: T.t("SETTINGS_NIGHT_LIGHT_PER_DEVICE") })
 
     return (
         <SettingsOption title={T.t("SETTINGS_NIGHT_LIGHT_TITLE")} description={T.t("SETTINGS_NIGHT_LIGHT_DESC")} tooltip={T.t("SETTINGS_NIGHT_LIGHT_TIP")} expandable={notes.length > 0} startExpanded={true} input={(
