@@ -203,6 +203,9 @@ class TitanMqttClient {
     constructor({ getHost, credentials = null, log = () => { }, ca = TITAN_ROOT_CA, port = PORT, lingerMs = LINGER_MS, connectTimeoutMs = CONNECT_TIMEOUT_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS, watchTopics = [] }) {
         this.watchTopics = watchTopics
         this.lastWatched = new Map()
+        // Topics heard from on the current connection, so a value from before a drop
+        // isn't taken as current
+        this.freshWatched = new Set()
         this.getHost = getHost
         this.credentials = credentials
         this.log = log
@@ -318,12 +321,22 @@ class TitanMqttClient {
         return this.connecting
     }
 
+    // The latest value of a watched topic, or null if it hasn't been heard from since
+    // connecting
+    currentWatched(topic) {
+        return (this.socket && this.freshWatched.has(topic) ? this.lastWatched.get(topic) : null)
+    }
+
     // Only what changed is logged, since retained values come again on every connection
     async watch() {
         for (const topic of this.watchTopics) {
             this.messages.set(topic, payload => {
                 const text = payload.toString().slice(0, 300)
-                if (this.lastWatched.get(topic) === text) return
+                this.freshWatched.add(topic)
+                if (this.lastWatched.get(topic) === text) {
+                    this.lastWatched.set(topic, text)
+                    return
+                }
                 this.lastWatched.set(topic, text)
                 this.log("mqtt.state", { topic, payload: text })
             })
@@ -355,6 +368,7 @@ class TitanMqttClient {
     handleClosed() {
         this.log("mqtt.closed")
         this.socket = null
+        this.freshWatched.clear()
         this.stopTimers()
         // Whoever was waiting on these times out by themselves
         this.subscriptions.clear()

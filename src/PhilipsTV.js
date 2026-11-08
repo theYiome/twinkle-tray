@@ -27,7 +27,9 @@ const REQUEST_TIMEOUT = 8000
 // only get a short gap, since 700 ms per press made the remote feel slow.
 const MIN_REQUEST_GAP_MS = 700
 const COMMAND_GAP_MS = 100
-const BACKUP_LINGER_MS = 150 * 1000
+// The backup link stays connected, since it's how the TV's home screen is noticed
+const BACKUP_LINGER_MS = 7 * 24 * 60 * 60 * 1000
+const BACKUP_RECONNECT_MS = 15 * 1000
 
 // Philips' app secret for signing pairing grants. It's the same for every client.
 const PAIRING_KEY = Buffer.from("ZmVay1EQVFOaZhwQ4Kv81ypLAZNczV9sG4KkseXWn1NEk6cXmPKO/MCa9sryslvLCFMnNe4Z4CPXzToowvhHvA==", "base64")
@@ -218,9 +220,10 @@ class PhilipsTV {
         return !!this.backup
     }
 
-    // "launcher" while the TV's home screen is up, as the backup link last reported it
+    // "launcher" while the TV's home screen is up, as the backup link reports it, or
+    // null when the link isn't connected to say
     get backupChannelState() {
-        const text = this.backup?.lastWatched?.get("channels/state")
+        const text = this.backup?.currentWatched?.("channels/state")
         try {
             return (text ? JSON.parse(text).state : null)
         } catch (e) {
@@ -228,11 +231,18 @@ class PhilipsTV {
         }
     }
 
+    // Reconnects the backup link if it dropped, no more often than every 15 seconds
+    keepBackupConnected() {
+        if (!this.backup || this.backup.socket || this.backup.connecting) return
+        if (Date.now() < (this.backupRetryAt ?? 0)) return
+        this.backupRetryAt = Date.now() + BACKUP_RECONNECT_MS
+        this.backup.connect().catch(() => { })
+    }
+
     setBackupCredentials(credentials) {
         this.closeBackup()
         this.backupCredentials = credentials ?? null
-        // Kept open between the screen saver keys, which come every minute, and it
-        // records what the TV reports about itself, to see if it can tell when it's on
+        // Kept open, and it records what the TV reports about itself
         this.backup = (credentials ? this.backupClient(credentials, { lingerMs: BACKUP_LINGER_MS, watchTopics: ["state/power", "state", "channels/state"], ...this.backupOptions }) : null)
     }
 

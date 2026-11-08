@@ -462,6 +462,8 @@ class NetworkTV extends EventEmitter {
         if (this.status.displayActive === false) return "display disconnected"
         // An arrow key would move around the TV's own home screen and apps
         if (this.status.showing === "tv") return "tv showing its own screens"
+        // Not known yet, so wait a little for the first check rather than risk it
+        if (this.status.showing === null && this.onSince && Date.now() - this.onSince < 10000) return "checking what the tv shows"
         if (this.tv?.backupChannelState === "launcher") return "tv home screen"
         return null
     }
@@ -476,8 +478,17 @@ class NetworkTV extends EventEmitter {
         }
         this.checkingInput = true
         try {
+            this.tv.keepBackupConnected?.()
+            // The API keeps saying HDMI while the home screen is opened over it, and only
+            // the backup link notices that. The backup link says nothing about apps, which
+            // the API does notice. So it's the TV's own screens if either says so.
             const showing = await this.tv.getShowing()
-            if (showing) await this.setShowing(showing === "external" ? "pc" : "tv")
+            const homeScreen = (this.tv.backupChannelState === "launcher")
+            if (showing === "own" || homeScreen) {
+                await this.setShowing("tv")
+            } else if (showing === "external") {
+                await this.setShowing("pc")
+            }
         } catch (e) {
             // The regular poll looks after the API's health
             this.logOnChange("input", `couldn't check what the TV is showing: ${e.message}`)
@@ -495,7 +506,8 @@ class NetworkTV extends EventEmitter {
         if (showing === null || !this.followInput) return
         if (showing === "tv") {
             await this.detachForOwnScreens()
-        } else if (previous === "tv" && this.config.disconnectedForInput) {
+        } else if (this.config.disconnectedForInput) {
+            // Also after a restart or standby in between
             await this.reattachForPC()
         }
     }
@@ -616,11 +628,12 @@ class NetworkTV extends EventEmitter {
             this.setPower(true).catch(e => console.log("NetworkTV: couldn't wake the TV:", e.message))
         }
         if (power === "on") {
+            this.onSince = Date.now()
             this.wakingUntil = 0
             this.readStateSoon()
         }
 
-        const action = displayActionFor({
+        let action = displayActionFor({
             power,
             autoDisconnect: this.autoDisconnect,
             castSeen: !!this.config.castSeen,
@@ -628,6 +641,9 @@ class NetworkTV extends EventEmitter {
             disconnectedAutomatically: !!this.config.disconnectedAutomatically,
             waking: this.wakeAfterSleep || Date.now() < this.wakingUntil
         })
+        // Detached for the TV's own screens: following the input brings it back, once
+        // it's known the TV is on the PC again
+        if (action === "connect" && this.config.disconnectedForInput && this.followInput) action = null
         if (action) this.note("display", { connected: action === "connect", reason: `tv ${power}` })
         if (action === "disconnect") {
             await this.setDisplayConnected(false, { automatic: true })
