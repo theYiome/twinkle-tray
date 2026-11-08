@@ -32,6 +32,8 @@ class DisplayDimmer {
         this.ramps = new Map()
         // key -> { monitorId, level } for SDR levels set here
         this.sdr = new Map()
+        // key -> the darkest level Windows allowed, when it's above what was asked
+        this.limits = new Map()
         this.timer = null
     }
 
@@ -58,6 +60,12 @@ class DisplayDimmer {
             // A ramp that was never dimmed here isn't touched
             const current = this.ramps.get(path)?.percent ?? 100
             if (current !== percent) this.setRamp(path, percent)
+        }
+        this.limits.clear()
+        for (const entry of entries) {
+            const ramp = (entry.hdr ? null : this.ramps.get(entry.path))
+            const allowed = ramp?.allowed
+            if (allowed && allowed > ramp.percent) this.limits.set(entry.key, allowed)
         }
 
         for (const [key, current] of this.sdr) {
@@ -87,7 +95,9 @@ class DisplayDimmer {
         if (percent >= 100) {
             this.ramps.delete(path)
         } else {
-            this.ramps.set(path, { percent, mode })
+            // "linear@50" means Windows wouldn't go below 50
+            const allowed = Number(String(mode).split("@")[1]) || (mode ? percent : null)
+            this.ramps.set(path, { percent, mode, allowed })
         }
         return mode
     }
@@ -133,6 +143,11 @@ class DisplayDimmer {
         clearInterval(this.timer)
         this.timer = null
         for (const [path] of this.ramps) this.setRamp(path, 100)
+    }
+
+    // The darkest Windows let this display go, if that's above what was asked for
+    limitFor(key) {
+        return this.limits.get(key) ?? null
     }
 
     get state() {

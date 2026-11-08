@@ -69,6 +69,8 @@
     "PANEL_TV_AMBILIGHT_OFF": "Off",
     "PANEL_TV_CONNECT": "Connect",
     "PANEL_DISPLAY_OFF": "Off",
+    "PANEL_DIM_LIMITED": "Windows stops at {{1}}%",
+    "PANEL_DIM_LIMITED_NOTE": "Windows only lets apps dim a display's colours by about half. Setting the GdiIcmGammaRange registry value to 256 and restarting Windows removes that limit.",
     "PANEL_DISPLAY_ONLY_SCREEN": "It's the only screen that's on",
     "PANEL_TV_DISCONNECT": "Disconnect",
     "PANEL_TV_EXTEND": "Extend",

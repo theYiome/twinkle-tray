@@ -3909,6 +3909,7 @@ function getDisplayControlState() {
       active: target.active,
       bounds: targetBounds(target),
       dim: settings.displayDimLevels?.[displayKeyFromPath(target.devicePath)] ?? 100,
+      dimLimitedTo: displayDimmer.limitFor(displayKeyFromPath(target.devicePath)),
       blackedOut: blackedOutDisplays.has(displayKeyFromPath(target.devicePath)),
       modeRevertsAt: displayModeChanges.revertsAt(displayKeyFromPath(target.devicePath)),
       hdr: displayHDR.stateOf(target.devicePath),

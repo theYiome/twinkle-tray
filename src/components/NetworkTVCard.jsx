@@ -151,6 +151,7 @@ export default function NetworkTVCard({ T }) {
                     <Slider label={T.t("PANEL_TV_DIM")} level={display.dim} min={5} max={100} onChange={sendDim} scrollAmount={window.settings?.scrollFlyoutAmount} syncLevel={true} />
                 </div>
             ) : null}
+            {display?.active && display.dimLimitedTo ? <PanelStatus text={T.t("PANEL_DIM_LIMITED", display.dimLimitedTo)} details={T.t("PANEL_DIM_LIMITED_NOTE")} /> : null}
             {display?.mirroredWith?.length ? <PanelStatus text={T.t("SETTINGS_DISPLAYS_MIRRORED", display.mirroredWith.join(", "))} details={T.t("PANEL_TV_MIRROR_NOTE", display.mirroredWith.join(", "))} /> : null}
             {tv.disconnectedAutomatically ? <PanelStatus text={T.t("PANEL_TV_AUTO_SHORT")} details={T.t("PANEL_TV_AUTO_NOTE")} /> : null}
             {tv.api === "unauthorized" ? <PanelStatus severity="warning" text={T.t("PANEL_TV_UNAUTHORIZED_SHORT")} details={T.t("PANEL_TV_UNAUTHORIZED")} /> : null}

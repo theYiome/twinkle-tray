@@ -320,21 +320,6 @@ std::vector<WORD> scaledRamp(const std::vector<WORD>& baseRamp, int percent)
     return ramp;
 }
 
-// What Windows accepts without the GdiIcmGammaRange registry setting: the peak
-// stays at the driver-safe scale and the mid-tones carry the dimming
-std::vector<WORD> safeDimRamp(const std::vector<WORD>& baseRamp, int percent)
-{
-    const double requested = percent / 100.0;
-    const double peak = (std::max)(requested, kMinimumDriverScale / 100.0);
-    const double exponent = requested < peak ? std::log((requested * 0.5) / peak) / std::log(0.5) : 1.0;
-    std::vector<WORD> ramp(baseRamp.size());
-    for (size_t i = 0; i < ramp.size(); i++) {
-        const double adjusted = peak * std::pow(baseRamp[i] / 65535.0, exponent);
-        ramp[i] = static_cast<WORD>(std::lround((std::min)(1.0, adjusted) * 65535.0));
-    }
-    return ramp;
-}
-
 // A ramp left dimmed by an earlier run has every channel short of full, which
 // calibration and Night light never do. Scaling it back up recovers the base.
 std::vector<WORD> baseFromCurrent(const std::vector<WORD>& ramp)
@@ -404,21 +389,21 @@ Napi::String setDim(const Napi::CallbackInfo& info)
         return Napi::String::New(env, "none");
     }
 
-    // Windows refuses ramps darker than it allows, so it goes as dark as it's let
-    std::vector<WORD> ramp = scaledRamp(state.baseRamp, percent);
-    std::string mode = "linear";
+    // Only ever a plain scale, which dims every tone by the same share of its light.
+    // Windows refuses scales darker than it allows (about half, unless GdiIcmGammaRange
+    // is raised), so it goes as dark as it's let rather than bending the curve.
     int applied = percent;
+    std::vector<WORD> ramp = scaledRamp(state.baseRamp, applied);
     bool ok = applyRamp(displayName, ramp);
-    for (applied = percent; !ok && applied < 100; applied = (std::min)(100, applied + 5)) {
-        ramp = safeDimRamp(state.baseRamp, applied);
-        mode = "safe";
+    while (!ok && applied < 100) {
+        applied = (std::min)(100, applied + 2);
+        ramp = scaledRamp(state.baseRamp, applied);
         ok = applyRamp(displayName, ramp);
-        if (ok) break;
     }
     if (!ok) return Napi::String::New(env, "");
     state.applied = ramp;
     state.percent = applied;
-    return Napi::String::New(env, mode + (applied != percent ? "@" + std::to_string(applied) : ""));
+    return Napi::String::New(env, std::string("linear") + (applied != percent ? "@" + std::to_string(applied) : ""));
 }
 
 // Whether the ramp is still the one setDim applied, so a reset or another app
