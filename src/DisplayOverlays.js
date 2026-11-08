@@ -1,6 +1,6 @@
-// Dims a display with a black, click-through window on top of it. Unlike a gamma
-// ramp this works in HDR and can go nearly black, but it can't reach exclusive
-// fullscreen apps, and it dims the pixels rather than the panel.
+// Blacks out a display with a window on top of it, until it's clicked. Dimming used
+// to work this way too, but now goes through DisplayDimmer, since an always-on-top
+// window covering a display makes Windows treat it as a fullscreen app.
 
 const { BrowserWindow, screen } = require("electron")
 const { WindowUtils } = require("tt-windows-utils")

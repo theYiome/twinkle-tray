@@ -84,6 +84,7 @@ const { NetworkTV } = require("./NetworkTV");
 const { setTVDiagnostics } = require("./PhilipsTV");
 const { TVDiagnostics } = require("./TVDiagnostics");
 const { DisplayOverlays } = require("./DisplayOverlays");
+const { DisplayDimmer } = require("./DisplayDimmer");
 const { MINIMUM_DIM_LEVEL, splitSliderLevel, sliderLevelForDim, sliderLevelForHardware, convertSliderLevel, combineDimLevels } = require("./DimRange");
 const { DisplayModeChanges } = require("./DisplayModes");
 const { DDCRecheck } = require("./DisplayDetection");
@@ -1441,7 +1442,7 @@ function canUseGammaRamp(monitor) {
 }
 
 // On unless turned off for a display: the bottom of the slider range keeps hardware
-// brightness at its minimum and dims further with an overlay, which also works in HDR.
+// brightness at its minimum and dims the picture further (see DisplayDimmer).
 function usesExtendedMinimum(monitor) {
   if (settings.extendMinimumDisplays?.[monitor?.key] === false) return false
   if (usesGammaSlider(monitor)) return false // Gamma is already the primary control
@@ -2837,6 +2838,7 @@ function commitRefreshedMonitors(newMonitors, oldMonitors = {}) {
 
   monitors = newMonitors
   lastCompletedRefresh = Date.now()
+  applyDisplayDimming()
   lightSensor.setMonitors(monitors)
   flushDeferredFeatureUpdates()
   autoEnableDetectedFeatures()
@@ -3781,6 +3783,23 @@ ipcMain.on('save-report', async () => {
 //
 
 const blackedOutDisplays = new Set()
+// Dimming goes through each display's gamma ramp, or SDR brightness in HDR, rather
+// than a window on top: an always-on-top window covering a display makes Windows
+// treat it as a fullscreen app and demote its taskbar
+const displayDimmer = new DisplayDimmer({
+  native: DisplayBrightness,
+  setSDRLevel: (id, level) => monitorsThread?.send({ type: "sdr", brightness: level, id }),
+  getSdrBase: key => settings.dimSdrBase?.[key],
+  setSdrBase: (key, level) => {
+    const next = Object.assign({}, settings.dimSdrBase)
+    if (level === undefined) {
+      delete next[key]
+    } else {
+      next[key] = level
+    }
+    writeSettings({ dimSdrBase: next }, false)
+  }
+})
 const displayOverlays = new DisplayOverlays({
   onRestore: keys => {
     keys.forEach(key => blackedOutDisplays.delete(key))
@@ -3928,13 +3947,32 @@ function applyDisplayOverlays() {
   for (const key of blackedOutDisplays) {
     if (!displayTargets.some(target => target.active && displayKeyFromPath(target.devicePath) === key)) blackedOutDisplays.delete(key)
   }
-  displayOverlays.apply(displayTargets.filter(target => target.active).map(target => {
+  const active = displayTargets.filter(target => target.active)
+  displayOverlays.apply(active.map(target => {
     const key = displayKeyFromPath(target.devicePath)
+    return { key, bounds: targetBounds(target), level: 100, blackout: blackedOutDisplays.has(key) }
+  }))
+  applyDisplayDimming(active)
+}
+
+function findMonitorByKey(key) {
+  return Object.values(monitors ?? {}).find(monitor => monitor?.key === key)
+}
+
+// Needs the monitor list for each display's Windows name and HDR state, so it's
+// applied again whenever that's refreshed
+function applyDisplayDimming(active = displayTargets.filter(target => target.active)) {
+  displayDimmer.apply(active.map(target => {
+    const key = displayKeyFromPath(target.devicePath)
+    const monitor = findMonitorByKey(key)
     return {
       key,
-      bounds: targetBounds(target),
-      level: combineDimLevels(settings.displayDimLevels?.[key] ?? 100, settings.extendedDimLevels?.[key] ?? 100),
-      blackout: blackedOutDisplays.has(key)
+      // A display whose own brightness is its gamma ramp is left to that
+      path: (usesGammaRamp(monitor) ? undefined : (monitor?.softwarePath || monitor?.path)),
+      monitorId: monitor?.id,
+      hdr: monitor?.hdr === "active",
+      sdrLevel: monitor?.sdrLevel,
+      level: combineDimLevels(settings.displayDimLevels?.[key] ?? 100, settings.extendedDimLevels?.[key] ?? 100)
     }
   }))
 }
@@ -5065,6 +5103,11 @@ app.on("activate", () => {
 });
 
 app.on('quit', () => {
+  try {
+    displayDimmer.restoreRamps()
+  } catch (e) {
+    console.log("Couldn't undo display dimming", e)
+  }
   restoreGammaRampsOnQuit()
   try {
     networkTV.stop()

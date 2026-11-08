@@ -38,7 +38,9 @@ module.exports = {
     },
     DisplayBrightness: {
         getBrightness: DisplayBrightness.getBrightness,
-        setBrightness: DisplayBrightness.setBrightness
+        setBrightness: DisplayBrightness.setBrightness,
+        setDim: DisplayBrightness.setDim,
+        dimIntact: DisplayBrightness.dimIntact
     },
     WindowMaterial: {
         setWindowMaterial: (hwnd, materialType = 1, cornersType = 2, darkModeSupported = true) => {

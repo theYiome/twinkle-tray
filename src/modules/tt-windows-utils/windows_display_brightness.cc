@@ -296,10 +296,155 @@ Napi::Boolean setBrightness(const Napi::CallbackInfo& info)
     return Napi::Boolean::New(env, ok);
 }
 
+//
+// Dimming. Separate from the brightness levels above: it scales whatever ramp the
+// display has (calibration, Night light) by a percentage, darker than they can go
+// when Windows allows it.
+//
+
+struct DimState {
+    std::vector<WORD> baseRamp;
+    std::vector<WORD> applied;
+    int percent = 100;
+};
+
+std::map<std::wstring, DimState> dimStates;
+constexpr int kMinimumDimPercent = 1;
+
+std::vector<WORD> scaledRamp(const std::vector<WORD>& baseRamp, int percent)
+{
+    std::vector<WORD> ramp(baseRamp.size());
+    for (size_t i = 0; i < ramp.size(); i++) {
+        ramp[i] = static_cast<WORD>(std::lround(baseRamp[i] * (percent / 100.0)));
+    }
+    return ramp;
+}
+
+// What Windows accepts without the GdiIcmGammaRange registry setting: the peak
+// stays at the driver-safe scale and the mid-tones carry the dimming
+std::vector<WORD> safeDimRamp(const std::vector<WORD>& baseRamp, int percent)
+{
+    const double requested = percent / 100.0;
+    const double peak = (std::max)(requested, kMinimumDriverScale / 100.0);
+    const double exponent = requested < peak ? std::log((requested * 0.5) / peak) / std::log(0.5) : 1.0;
+    std::vector<WORD> ramp(baseRamp.size());
+    for (size_t i = 0; i < ramp.size(); i++) {
+        const double adjusted = peak * std::pow(baseRamp[i] / 65535.0, exponent);
+        ramp[i] = static_cast<WORD>(std::lround((std::min)(1.0, adjusted) * 65535.0));
+    }
+    return ramp;
+}
+
+// A ramp left dimmed by an earlier run has every channel short of full, which
+// calibration and Night light never do. Scaling it back up recovers the base.
+std::vector<WORD> baseFromCurrent(const std::vector<WORD>& ramp)
+{
+    if (ramp.size() < 3 * kChannelEntries) return ramp;
+    WORD top = 0;
+    for (size_t channel = 0; channel < 3; channel++) {
+        top = (std::max)(top, ramp[(channel * kChannelEntries) + kChannelEntries - 1]);
+    }
+    if (top == 0 || top >= 65535 - kRampVerificationTolerance) return ramp;
+    const double scale = top / 65535.0;
+    std::vector<WORD> base(ramp.size());
+    for (size_t i = 0; i < ramp.size(); i++) {
+        base[i] = static_cast<WORD>(std::lround((std::min)(1.0, (ramp[i] / 65535.0) / scale) * 65535.0));
+    }
+    return base;
+}
+
+bool applyRamp(const std::wstring& displayName, const std::vector<WORD>& ramp)
+{
+    for (int attempt = 0; attempt < kSetAttempts; attempt++) {
+        HDC dc = openDisplay(displayName);
+        bool ok = false;
+        if (dc) {
+            ok = SetDeviceGammaRamp(dc, const_cast<WORD*>(ramp.data())) != FALSE;
+            if (ok) {
+                std::vector<WORD> appliedRamp;
+                ok = readRamp(dc, appliedRamp) && rampsMatch(ramp, appliedRamp);
+            }
+            DeleteDC(dc);
+        }
+        if (ok) return true;
+        if (attempt + 1 < kSetAttempts) std::this_thread::sleep_for(std::chrono::milliseconds(20 * (attempt + 1)));
+    }
+    return false;
+}
+
+// setDim(displayName, percent) -> "linear", "safe", "none" (100%) or "" on failure.
+// The ramp in place is the base, unless it's still the one applied here last time.
+Napi::String setDim(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsNumber()) return Napi::String::New(env, "");
+    const double requestedValue = info[1].As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(requestedValue)) return Napi::String::New(env, "");
+    const int percent = (std::max)(kMinimumDimPercent, (std::min)(100, static_cast<int>(std::lround(requestedValue))));
+    const std::wstring displayName = normalizeDisplayName(utf8ToWide(info[0].As<Napi::String>().Utf8Value()));
+    if (displayName.empty()) return Napi::String::New(env, "");
+
+    std::lock_guard<std::mutex> lock(gammaMutex);
+    HDC dc = openDisplay(displayName);
+    if (!dc) return Napi::String::New(env, "");
+    std::vector<WORD> current;
+    const bool read = readRamp(dc, current);
+    DeleteDC(dc);
+    if (!read) return Napi::String::New(env, "");
+
+    DimState& state = dimStates[displayName];
+    if (state.applied.empty() || !rampsMatch(state.applied, current)) {
+        state.baseRamp = (state.applied.empty() ? baseFromCurrent(current) : current);
+    }
+
+    if (percent >= 100) {
+        if (!rampsMatch(state.baseRamp, current) && !applyRamp(displayName, state.baseRamp)) return Napi::String::New(env, "");
+        state.applied = state.baseRamp;
+        state.percent = 100;
+        return Napi::String::New(env, "none");
+    }
+
+    // Windows refuses ramps darker than it allows, so it goes as dark as it's let
+    std::vector<WORD> ramp = scaledRamp(state.baseRamp, percent);
+    std::string mode = "linear";
+    int applied = percent;
+    bool ok = applyRamp(displayName, ramp);
+    for (applied = percent; !ok && applied < 100; applied = (std::min)(100, applied + 5)) {
+        ramp = safeDimRamp(state.baseRamp, applied);
+        mode = "safe";
+        ok = applyRamp(displayName, ramp);
+        if (ok) break;
+    }
+    if (!ok) return Napi::String::New(env, "");
+    state.applied = ramp;
+    state.percent = applied;
+    return Napi::String::New(env, mode + (applied != percent ? "@" + std::to_string(applied) : ""));
+}
+
+// Whether the ramp is still the one setDim applied, so a reset or another app
+// (Night light changing, a display event) can be noticed and dimming put back
+Napi::Boolean dimIntact(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
+    const std::wstring displayName = normalizeDisplayName(utf8ToWide(info[0].As<Napi::String>().Utf8Value()));
+    std::lock_guard<std::mutex> lock(gammaMutex);
+    auto found = dimStates.find(displayName);
+    if (found == dimStates.end() || found->second.applied.empty()) return Napi::Boolean::New(env, false);
+    HDC dc = openDisplay(displayName);
+    if (!dc) return Napi::Boolean::New(env, false);
+    std::vector<WORD> current;
+    const bool read = readRamp(dc, current);
+    DeleteDC(dc);
+    return Napi::Boolean::New(env, read && rampsMatch(found->second.applied, current));
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports)
 {
     exports.Set("getBrightness", Napi::Function::New(env, getBrightness));
     exports.Set("setBrightness", Napi::Function::New(env, setBrightness));
+    exports.Set("setDim", Napi::Function::New(env, setDim));
+    exports.Set("dimIntact", Napi::Function::New(env, dimIntact));
     return exports;
 }
 

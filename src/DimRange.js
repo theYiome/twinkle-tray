@@ -1,6 +1,6 @@
 // One brightness slider covering two kinds of dimming. Above the breakpoint it drives
-// the display's own brightness, and below it the display stays at its minimum while an
-// overlay darkens the picture further. Pure, so the mapping can be tested on its own.
+// the display's own brightness, and below it the display stays at its minimum while its
+// picture is dimmed further (see DisplayDimmer). Pure, so the mapping can be tested on its own.
 
 // Keeps every display readable, so nobody ends up unable to see the controls
 const MINIMUM_DIM_LEVEL = 5
