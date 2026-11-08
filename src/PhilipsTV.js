@@ -119,7 +119,11 @@ function rawRequest(host, method, path, body, headers = {}, timeout = REQUEST_TI
             res.setEncoding("utf8")
             res.on("data", chunk => text += chunk)
             res.on("end", () => {
-                diagnostics("api", { method, path, status: res.statusCode, ms: Date.now() - startedAt, signed })
+                // What the TV is showing is asked every second, which would push everything
+                // else out of the log. Its changes are logged where they're noticed.
+                if (!(path === "/6/context" && res.statusCode === 200)) {
+                    diagnostics("api", { method, path, status: res.statusCode, ms: Date.now() - startedAt, signed })
+                }
                 resolve({ status: res.statusCode, headers: res.headers, text })
             })
         })
@@ -434,6 +438,15 @@ class PhilipsTV {
     // HDMI, as opposed to the TV's own apps and home screen. It doesn't say which input.
     async isShowingExternalInput() {
         return (await this.request("GET", "/context"))?.level1 === "WatchExtension"
+    }
+
+    // "external" on an HDMI input, "own" on the TV's home screen and apps (which Titan
+    // OS reports as "NetTv"), or null for anything else
+    async getShowing() {
+        const level1 = (await this.request("GET", "/context"))?.level1
+        if (level1 === "WatchExtension") return "external"
+        if (level1 === "NetTv") return "own"
+        return null
     }
 
     // Empty while Ambilight is off

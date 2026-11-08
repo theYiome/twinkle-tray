@@ -46,6 +46,8 @@ const SCREEN_SAVER_CHECK_MS = 5000
 // Sent more than once when the screens return, since the TV may still be settling
 const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
 const SCREENS_OFF_DEFAULT_MINUTES = 5
+// How often what the TV is showing is checked, while it's on and the screens are on
+const INPUT_CHECK_MS = 1000
 // After being told to go to standby, the TV still looks like it's on for a while
 const STANDBY_SETTLE_MS = 20000
 // How often the log gets a look at everything the TV is answering on
@@ -150,6 +152,8 @@ class NetworkTV extends EventEmitter {
         this.note = note
         this.diagnosticsPath = diagnosticsPath
         this.diagnosticsTimer = null
+        this.inputTimer = null
+        this.checkingInput = false
         this.screensOn = true
         this.screenSaverTimer = null
         this.screenSaverWakeTimers = []
@@ -190,6 +194,9 @@ class NetworkTV extends EventEmitter {
             ambilightStyle: null,
             displayActive: null,
             mirrored: false,
+            // "pc" on an HDMI input (the PC, as there's nothing else), "tv" on the TV's
+            // own home screen and apps, or null while it isn't known
+            showing: null,
             // "on" or "off" while a change sent from here is under way
             changing: null,
             api: "unknown"
@@ -202,6 +209,12 @@ class NetworkTV extends EventEmitter {
 
     get isPaired() {
         return !!(this.config.host && this.tv?.deviceId)
+    }
+
+    // On unless turned off: the TV's display leaves the desktop while the TV shows its
+    // own screens, and comes back when it returns to the PC
+    get followInput() {
+        return this.config.followInput !== false
     }
 
     // On unless turned off, so a TV in standby doesn't leave windows stuck on it
@@ -229,6 +242,8 @@ class NetworkTV extends EventEmitter {
         this.screenSaverTimer = setInterval(() => this.sendScreenSaverKeyIfDue(), SCREEN_SAVER_CHECK_MS)
         clearInterval(this.diagnosticsTimer)
         this.diagnosticsTimer = setInterval(() => this.logSnapshot("timer"), DIAGNOSTICS_EVERY_MS)
+        clearInterval(this.inputTimer)
+        this.inputTimer = setInterval(() => this.checkInput(), INPUT_CHECK_MS)
         if (this.isPaired) this.poll()
     }
 
@@ -244,6 +259,8 @@ class NetworkTV extends EventEmitter {
         this.wakeRetryTimer = null
         clearInterval(this.diagnosticsTimer)
         this.diagnosticsTimer = null
+        clearInterval(this.inputTimer)
+        this.inputTimer = null
         this.tv?.closeBackup?.()
     }
 
@@ -293,6 +310,7 @@ class NetworkTV extends EventEmitter {
             standbyOnShutdown: !!this.config.standbyOnShutdown,
             followSleep: this.config.followSleep !== false,
             keepScreenSaverAway: this.config.keepScreenSaverAway !== false,
+            followInput: this.followInput,
             screensOffStandbyMinutes: this.screensOffMinutes,
             ambilightStyles: AMBILIGHT_STYLES.map(({ id, group, name }) => ({ id, group, name })),
             backupPaired: !!this.tv?.hasBackup,
@@ -442,9 +460,72 @@ class NetworkTV extends EventEmitter {
         if (this.apiDown && !this.tv.hasBackup) return "api down"
         // Nothing from this PC is on it, so it's being used for something else
         if (this.status.displayActive === false) return "display disconnected"
-        // An arrow key would move around the TV's own menus
+        // An arrow key would move around the TV's own home screen and apps
+        if (this.status.showing === "tv") return "tv showing its own screens"
         if (this.tv?.backupChannelState === "launcher") return "tv home screen"
         return null
+    }
+
+    // Asked every second. Only while the TV is on, the screens are on and the API is
+    // answering, since it's one request each time and the API has locked up before.
+    async checkInput() {
+        if (this.checkingInput) return
+        if (!this.isPaired || this.tracker.state !== "on" || !this.screensOn || this.apiDown || this.wakeAfterSleep) {
+            if (this.tracker.state !== "on" && this.status.showing !== null) this.setShowing(null)
+            return
+        }
+        this.checkingInput = true
+        try {
+            const showing = await this.tv.getShowing()
+            if (showing) await this.setShowing(showing === "external" ? "pc" : "tv")
+        } catch (e) {
+            // The regular poll looks after the API's health
+            this.logOnChange("input", `couldn't check what the TV is showing: ${e.message}`)
+        } finally {
+            this.checkingInput = false
+        }
+    }
+
+    async setShowing(showing) {
+        const previous = this.status.showing
+        if (showing === previous) return
+        this.setStatus({ showing })
+        this.logOnChange("input", null)
+        this.note("showing", { showing, previous })
+        if (showing === null || !this.followInput) return
+        if (showing === "tv") {
+            await this.detachForOwnScreens()
+        } else if (previous === "tv" && this.config.disconnectedForInput) {
+            await this.reattachForPC()
+        }
+    }
+
+    // Leaving the PC for the TV's own screens takes its display off the desktop, so
+    // windows move to the other screens. Marked, so only this brings it back.
+    async detachForOwnScreens() {
+        const devicePath = this.config.displayPath
+        if (!devicePath) return
+        try {
+            const targets = await this.displays.list()
+            const target = targets.find(entry => entry.devicePath === devicePath)
+            if (!target?.active || !targets.some(entry => entry !== target && entry.active)) return
+            await this.setDisplayConnected(false, { automatic: true })
+            this.setConfig({ disconnectedForInput: true })
+            this.note("display", { connected: false, reason: "tv showing its own screens" })
+        } catch (e) {
+            this.note("display.failed", { connected: false, error: e.message })
+        }
+    }
+
+    async reattachForPC() {
+        this.setConfig({ disconnectedForInput: false })
+        if (!this.config.disconnectedAutomatically || this.status.displayActive !== false) return
+        try {
+            await this.setDisplayConnected(true, { automatic: true })
+            this.note("display", { connected: true, reason: "tv back on the pc" })
+        } catch (e) {
+            this.note("display.failed", { connected: true, error: e.message })
+        }
     }
 
     shouldSendScreenSaverKey() {

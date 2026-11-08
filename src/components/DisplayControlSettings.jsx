@@ -149,6 +149,7 @@ function PairedTV({ T, tv, displays }) {
             )} />
             <SettingsOption title={T.t("SETTINGS_TV_SAVER_TITLE")} description={T.t("SETTINGS_TV_SAVER_DESC")} tooltip={T.t("SETTINGS_TV_SAVER_TIP")} input={toggle("keepScreenSaverAway", tv.keepScreenSaverAway)} />
             <SettingsOption title={T.t("SETTINGS_TV_AUTO_TITLE")} description={T.t("SETTINGS_TV_AUTO_DESC")} tooltip={T.t("SETTINGS_TV_AUTO_TIP")} input={toggle("autoDisconnect", tv.autoDisconnect)} />
+            <SettingsOption title={T.t("SETTINGS_TV_INPUT_TITLE")} description={T.t("SETTINGS_TV_INPUT_DESC")} tooltip={T.t("SETTINGS_TV_INPUT_TIP")} input={toggle("followInput", tv.followInput)} />
             <BackupLink T={T} tv={tv} />
             <SettingsOption title={T.t("SETTINGS_TV_LOG_TITLE")} tooltip={T.t("SETTINGS_TV_LOG_TIP")} input={<a className="button" onClick={() => send("tv.openDiagnostics")}>{T.t("SETTINGS_TV_LOG_OPEN")}</a>} />
         </>

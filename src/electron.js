@@ -4123,8 +4123,9 @@ const displayControlCommands = {
   "tv.pairStart": ({ host }) => networkTV.startPairing(host),
   "tv.pairFinish": ({ pin }) => networkTV.finishPairing(pin),
   "tv.forget": () => networkTV.forget(),
-  "tv.setOptions": ({ autoDisconnect, displayPath, wakeOnStartup, standbyOnShutdown, followSleep, keepScreenSaverAway, screensOffStandbyMinutes }) => {
+  "tv.setOptions": ({ autoDisconnect, followInput, displayPath, wakeOnStartup, standbyOnShutdown, followSleep, keepScreenSaverAway, screensOffStandbyMinutes }) => {
     const changes = {}
+    if (followInput !== undefined) changes.followInput = !!followInput
     if (screensOffStandbyMinutes !== undefined) changes.screensOffStandbyMinutes = Math.max(0, Number(screensOffStandbyMinutes) || 0)
     if (followSleep !== undefined) changes.followSleep = !!followSleep
     if (keepScreenSaverAway !== undefined) changes.keepScreenSaverAway = !!keepScreenSaverAway
