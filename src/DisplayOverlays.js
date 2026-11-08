@@ -11,6 +11,14 @@ const SWP_NOACTIVATE = 0x0010
 const TOPMOST_CHECK_MS = 5000
 const PLACEMENT_RETRY_MS = 250
 
+// Windows takes an always-on-top window covering a whole display for a fullscreen app,
+// and then drops that display's taskbar below other windows and changes how its tray
+// behaves. So a dimming overlay stops one pixel short. A blacked out display is meant
+// to be covered completely, taskbar included.
+function placementFor({ x, y, width, height }, blackout) {
+    return { x, y, width, height: (blackout ? height : Math.max(1, height - 1)) }
+}
+
 // A blacked out display takes clicks, since a click on it is how to bring it back. That
 // has to work when its taskbar is what's covered, and it keeps clicks off hidden windows.
 const OVERLAY_PAGE = "data:text/html,<style>html,body{height:100%25;margin:0;background:%23000}</style><body onmousedown=\"document.title='restore'+Date.now()\"></body>"
@@ -48,7 +56,7 @@ class DisplayOverlays {
         for (const [id, { bounds, level, blackout, keys }] of wanted) {
             let overlay = this.overlays.get(id)
             if (!overlay) {
-                overlay = { window: this.createWindow(bounds), bounds, blackout: false }
+                overlay = { window: this.createWindow(placementFor(bounds, false)), bounds, blackout: false }
                 const created = overlay
                 overlay.window.webContents.on("page-title-updated", (event, title) => {
                     if (created.blackout && title.startsWith("restore")) this.onRestore(created.keys)
@@ -63,6 +71,7 @@ class DisplayOverlays {
             if (overlay.blackout !== blackout) {
                 overlay.blackout = blackout
                 overlay.window.setIgnoreMouseEvents(!blackout)
+                this.place(overlay.window, placementFor(bounds, blackout))
             }
             overlay.window.setOpacity(blackout ? 1 : (100 - Math.max(MINIMUM_DIM_LEVEL, level)) / 100)
         }
@@ -119,8 +128,8 @@ class DisplayOverlays {
     }
 
     stayOnTop() {
-        for (const { window, bounds } of this.overlays.values()) {
-            this.place(window, bounds)
+        for (const { window, bounds, blackout } of this.overlays.values()) {
+            this.place(window, placementFor(bounds, blackout))
         }
     }
 
@@ -129,4 +138,4 @@ class DisplayOverlays {
     }
 }
 
-module.exports = { DisplayOverlays }
+module.exports = { DisplayOverlays, placementFor }
