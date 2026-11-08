@@ -37,11 +37,12 @@ const SCREEN_SAVER_KEY = "CursorUp"
 // Counted from the last key the TV got from here, of any kind, rather than from when
 // the app started, so restarting the app or waking the PC can't leave a gap.
 const SCREEN_SAVER_KEY_INTERVAL_MS = 3 * 60 * 1000
-// A key doesn't stop the logo coming back when the PC's picture is almost all black,
-// it only clears it, so with the backup link, which doesn't load the API, it's sent
-// often enough that the logo doesn't stay up for long
-const SCREEN_SAVER_KEY_BACKUP_INTERVAL_MS = 60 * 1000
-const SCREEN_SAVER_CHECK_MS = 15 * 1000
+// A key doesn't stop the logo coming back after a few minutes of a still picture, it
+// only clears it, and nothing the TV reports shows when it's up. So with the backup
+// link, which doesn't load the API, a key goes every 5 seconds and the logo can only
+// flash. Just under the check interval, so a key that took a moment still counts as due.
+const SCREEN_SAVER_KEY_BACKUP_INTERVAL_MS = 4500
+const SCREEN_SAVER_CHECK_MS = 5000
 // Sent more than once when the screens return, since the TV may still be settling
 const SCREEN_SAVER_WAKE_KEYS_MS = [0, 5000, 15000]
 const SCREENS_OFF_DEFAULT_MINUTES = 5
@@ -441,6 +442,8 @@ class NetworkTV extends EventEmitter {
         if (this.apiDown && !this.tv.hasBackup) return "api down"
         // Nothing from this PC is on it, so it's being used for something else
         if (this.status.displayActive === false) return "display disconnected"
+        // An arrow key would move around the TV's own menus
+        if (this.tv?.backupChannelState === "launcher") return "tv home screen"
         return null
     }
 

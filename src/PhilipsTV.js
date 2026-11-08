@@ -214,6 +214,16 @@ class PhilipsTV {
         return !!this.backup
     }
 
+    // "launcher" while the TV's home screen is up, as the backup link last reported it
+    get backupChannelState() {
+        const text = this.backup?.lastWatched?.get("channels/state")
+        try {
+            return (text ? JSON.parse(text).state : null)
+        } catch (e) {
+            return null
+        }
+    }
+
     setBackupCredentials(credentials) {
         this.closeBackup()
         this.backupCredentials = credentials ?? null
